@@ -354,7 +354,7 @@ const Spotify = (() => {
   async function me(){ return api('/me'); }
   async function search(query){
     const q = encodeURIComponent(query);
-    const data = await api(`/search?q=${q}&type=track&limit=12`);
+    const data = await api(`/search?q=${q}&type=track&limit=10`);
     return (data.tracks?.items || []).map(normalizeTrack);
   }
   function normalizeTrack(t){
