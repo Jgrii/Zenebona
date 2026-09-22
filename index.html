@@ -823,7 +823,8 @@ function renderGamePlay(g){
 
   if (g.current.placedAt !== null){
     if (g.mode === 'pro' && g.current.guessArtist === null){
-      const decoys = shuffle(g.playlist.tracks.filter(t=>t.id!==g.current.track.id)).slice(0,3).map(t=>t.artist);
+      const uniqueArtists = [...new Set(g.playlist.tracks.map(t=>t.artist))].filter(a=>a!==g.current.track.artist);
+      const decoys = shuffle(uniqueArtists).slice(0,3);
       const options = shuffle([g.current.track.artist, ...decoys]);
       wrap.appendChild(el('h3', {}, 'Ki énekli?'));
       const grid = el('div', {class:'choice-grid'});
@@ -853,6 +854,7 @@ function renderResult(g){
     box.appendChild(el('p', {}, artistOk ? `Az előadót is eltaláltad — bónuszpont jár!` : `Az előadó valójában: ${track.artist}.`));
   }
   box.appendChild(el('p', {}, el('strong', {}, `+${g.current.gained} pont ebben a körben.`)));
+  box.appendChild(el('p', {class:'muted'}, '🎵 A zene még szól — a "Következő játékos" gombra állunk le.'));
 
   const nextLabel = player.score >= g.targetScore ? 'Eredmény megtekintése' : `Következő játékos (${g.players[(g.turnIndex+1)%g.players.length].name})`;
   box.appendChild(el('button', { class:'primary', onclick: ()=> nextTurn(g) }, nextLabel));
@@ -898,7 +900,6 @@ function finalizeGuess(g){
   player.score += gained;
   if (correct) player.timeline.push(track); // csak helyes tipp esetén bővül az idővonal
 
-  Spotify.pause();
   g.current.resolved = true;
   g.current.correct = correct;
   g.current.gained = gained;
@@ -906,6 +907,7 @@ function finalizeGuess(g){
 }
 
 function nextTurn(g){
+  Spotify.pause();
   const player = g.players[g.turnIndex];
   if (player.score >= g.targetScore){
     g.winner = player;
