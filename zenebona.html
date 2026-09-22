@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Időgép — zenés időrend játék</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<style>
+  :root{
+    --bg: #15121c;
+    --bg-raised: #1e1a29;
+    --ink: #f3efe6;
+    --ink-dim: #c7c0d6;
+    --gold: #d4a24e;
+    --gold-dim: #8a6a34;
+    --violet: #7b71b8;
+    --violet-dim: #423d63;
+    --line: #332c47;
+    --good: #6fae6f;
+    --bad: #c96a5a;
+    --radius: 4px;
+    --serif: 'Fraunces', Georgia, serif;
+    --sans: 'Space Grotesk', system-ui, sans-serif;
+  }
+  *{ box-sizing: border-box; }
+  html,body{
+    margin:0; padding:0; background:var(--bg); color:var(--ink);
+    font-family: var(--sans); min-height:100%;
+  }
+  body{
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  h1,h2,h3{ font-family: var(--serif); font-weight:600; margin:0 0 .3em 0; letter-spacing:.2px; }
+  h1{ font-size: 1.9rem; }
+  h2{ font-size: 1.35rem; }
+  p{ line-height:1.55; color:var(--ink-dim); margin:.2em 0 1em 0; }
+  a{ color: var(--gold); }
+  button{
+    font-family: var(--sans); font-size:.95rem; cursor:pointer;
+    border-radius: var(--radius); border:1px solid var(--line);
+    background: var(--bg-raised); color:var(--ink); padding:.65em 1.1em;
+    transition: border-color .15s ease, background .15s ease;
+  }
+  button:hover{ border-color: var(--gold-dim); }
+  button:focus-visible, a:focus-visible, input:focus-visible{ outline:2px solid var(--gold); outline-offset:2px; }
+  button.primary{ background: var(--gold); color:#1c1608; border-color:var(--gold); font-weight:600; }
+  button.primary:hover{ background:#e2b263; }
+  button.ghost{ background:transparent; }
+  button:disabled{ opacity:.4; cursor:not-allowed; }
+  input[type=text], input[type=search]{
+    font-family: var(--sans); background: var(--bg-raised); color:var(--ink);
+    border:1px solid var(--line); border-radius: var(--radius); padding:.65em .8em; font-size:.95rem;
+  }
+  .wrap{ max-width: 720px; margin:0 auto; padding: 1.1rem 1.1rem 3rem 1.1rem; }
+  .row{ display:flex; gap:.6em; align-items:center; flex-wrap:wrap; }
+  .between{ display:flex; justify-content:space-between; align-items:center; }
+  .muted{ color: var(--ink-dim); font-size:.88rem; }
+  .pill{
+    display:inline-block; padding:.2em .65em; border-radius: 99px; font-size:.75rem;
+    border:1px solid var(--line); color:var(--ink-dim);
+  }
+  .pill.on{ border-color: var(--gold); color: var(--gold); }
+
+  header.top{
+    position: sticky; top:0; z-index:5; background: rgba(21,18,28,.92); backdrop-filter: blur(6px);
+    border-bottom:1px solid var(--line); padding: env(safe-area-inset-top,0px) 0 0 0;
+  }
+  header.top .inner{ max-width:720px; margin:0 auto; padding: .9rem 1.1rem; display:flex; align-items:center; justify-content:space-between; }
+  .brand{ display:flex; align-items:center; gap:.6em; }
+  .brand .disc{
+    width:26px; height:26px; border-radius:50%;
+    background: radial-gradient(circle at 50% 50%, var(--bg) 0 14%, var(--gold) 15% 17%, var(--bg-raised) 18% 100%);
+    border:1px solid var(--line);
+  }
+  .brand span{ font-family: var(--serif); font-size:1.15rem; font-weight:600; }
+
+  nav.tabs{ display:flex; gap: .4em; overflow-x:auto; padding: .7rem 1.1rem 0 1.1rem; max-width:720px; margin:0 auto; }
+  nav.tabs button{ white-space:nowrap; background:transparent; border:none; border-bottom:2px solid transparent; border-radius:0; padding:.5em .2em; color:var(--ink-dim); }
+  nav.tabs button.active{ color:var(--gold); border-bottom-color: var(--gold); }
+
+  .card{
+    background: var(--bg-raised); border:1px solid var(--line); border-radius: var(--radius);
+    padding: 1rem; margin-bottom: .8rem;
+  }
+
+  .track{
+    display:flex; align-items:center; gap:.8em; padding:.55em 0;
+    border-bottom:1px solid var(--line);
+  }
+  .track:last-child{ border-bottom:none; }
+  .track .art{
+    width:44px; height:44px; border-radius:50%; overflow:hidden; flex:0 0 auto;
+    background: radial-gradient(circle at 50% 50%, #000 0 20%, transparent 21%), var(--bg);
+    position:relative; border:1px solid var(--line);
+  }
+  .track .art img{ width:100%; height:100%; object-fit:cover; opacity:.92; }
+  .track .meta{ min-width:0; flex:1; }
+  .track .meta .t{ font-weight:600; font-size:.94rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .track .meta .a{ font-size:.82rem; color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .track .year{ font-family: var(--serif); color:var(--gold); font-size:1rem; flex:0 0 auto; }
+
+  .empty{ text-align:center; padding: 2.2rem 1rem; color:var(--ink-dim); }
+  .empty .big{ font-family: var(--serif); font-size:1.3rem; color:var(--ink); margin-bottom:.3em; }
+
+  /* timeline (game) */
+  .timeline-strip{ display:flex; align-items:stretch; gap:0; overflow-x:auto; padding: 1.2rem 0; }
+  .tl-card{
+    flex: 0 0 auto; width:108px; margin-right:14px; text-align:center; position:relative;
+  }
+  .tl-card .disc{
+    width:78px; height:78px; border-radius:50%; margin:0 auto .4em auto; overflow:hidden;
+    border:2px solid var(--gold-dim); position:relative; background:#000;
+  }
+  .tl-card .disc img{ width:100%; height:100%; object-fit:cover; }
+  .tl-card .disc::after{
+    content:""; position:absolute; inset:0; border-radius:50%;
+    background: radial-gradient(circle at 50% 50%, var(--bg) 0 9%, transparent 10%);
+  }
+  .tl-card .yr{ font-family: var(--serif); font-weight:700; color: var(--gold); }
+  .tl-card .name{ font-size:.72rem; color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tl-gap{
+    flex:0 0 auto; width:64px; display:flex; align-items:center; justify-content:center; margin-right:14px;
+  }
+  .tl-gap button{ width:64px; height:78px; border-style:dashed; color:var(--ink-dim); font-size:.78rem; }
+  .tl-gap button:hover{ color:var(--gold); border-color:var(--gold); }
+
+  .nowplaying{
+    display:flex; align-items:center; gap:1em; padding:1.3em 1em; border-radius: var(--radius);
+    background: linear-gradient(180deg, var(--bg-raised), var(--bg));
+    border:1px solid var(--line); margin-bottom:1rem;
+  }
+  .nowplaying .spinner-disc{
+    width:64px; height:64px; border-radius:50%; flex:0 0 auto;
+    background: repeating-radial-gradient(circle at 50% 50%, #000 0 2px, #221d2e 2px 4px);
+    border:1px solid var(--gold-dim);
+    animation: spin 3.2s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce){ .spinner-disc{ animation:none; } }
+  @keyframes spin{ from{ transform:rotate(0)} to{ transform:rotate(360deg)} }
+
+  .scorebar{ display:flex; gap:.5em; flex-wrap:wrap; margin-bottom:1rem; }
+  .score-chip{
+    border:1px solid var(--line); border-radius: 99px; padding:.35em .8em .35em .5em;
+    display:flex; align-items:center; gap:.5em; font-size:.85rem;
+  }
+  .score-chip .dot{ width:9px; height:9px; border-radius:50%; background:var(--violet); }
+  .score-chip.turn{ border-color: var(--gold); }
+  .score-chip .dot.turn{ background: var(--gold); }
+
+  .choice-grid{ display:grid; grid-template-columns: 1fr 1fr; gap:.6em; margin-top:.8em; }
+  .choice-grid button{ text-align:left; }
+
+  footer.setup-warning{
+    border:1px solid var(--bad); background: rgba(201,106,90,.08); border-radius: var(--radius);
+    padding: 1rem; margin: 1rem 0; font-size:.88rem; color: var(--ink-dim);
+  }
+  footer.setup-warning code{ color: var(--ink); }
+
+  .toast{
+    position: fixed; left:50%; bottom: calc(env(safe-area-inset-bottom,0px) + 18px); transform:translateX(-50%);
+    background: var(--bg-raised); border:1px solid var(--gold-dim); color:var(--ink);
+    padding:.7em 1.1em; border-radius: var(--radius); font-size:.88rem; z-index: 30;
+    max-width: 90vw;
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="inner">
+    <div class="brand"><div class="disc"></div><span>Időgép</span></div>
+    <div id="authArea" class="row"></div>
+  </div>
+  <nav class="tabs" id="tabs"></nav>
+</header>
+
+<main class="wrap" id="app"></main>
+
+<div id="toastHost"></div>
+
+<script>
+/* ======================================================================
+   BEÁLLÍTÁS — ezt a két blokkot töltsd ki a saját adataiddal.
+   Lásd a mellékelt README.md-t a lépésekhez.
+   ====================================================================== */
+const SPOTIFY_CLIENT_ID = "edae957db84641b0ad54303a25b295a0";
+// A redirect URI-t pontosan ugyanígy (jelen oldal saját címe) kell
+// regisztrálnod a Spotify Developer Dashboardon.
+const REDIRECT_URI = window.location.origin + window.location.pathname;
+const SPOTIFY_SCOPES = [
+  "user-read-private",
+  "user-read-email",
+  "user-read-playback-state",
+  "user-modify-playback-state"
+].join(" ");
+
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBEVdJoA_Tpf19YiNKxpLawA5_jdIQk04o",
+  authDomain: "zenebona-caf20.firebaseapp.com",
+  projectId: "zenebona-caf20",
+  storageBucket: "zenebona-caf20.firebasestorage.app",
+  messagingSenderId: "335131612833",
+  appId: "1:335131612833:web:f3486533f42ee6ed9442e0",
+  measurementId: "G-E56PD403QE"
+};
+/* ====================================================================== */
+
+const CONFIGURED = SPOTIFY_CLIENT_ID !== "IDE_JON_A_SPOTIFY_CLIENT_ID"
+  && FIREBASE_CONFIG.apiKey !== "IDE_JON_A_FIREBASE_API_KEY";
+
+let db = null;
+if (CONFIGURED) {
+  firebase.initializeApp(FIREBASE_CONFIG);
+  db = firebase.firestore();
+}
+
+/* ---------------------------------------------------------------------
+   Kis segédfüggvények
+   --------------------------------------------------------------------- */
+function toast(msg, ms=3200){
+  const host = document.getElementById('toastHost');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  host.appendChild(el);
+  setTimeout(()=> el.remove(), ms);
+}
+function el(tag, attrs={}, children=[]){
+  const e = document.createElement(tag);
+  for (const [k,v] of Object.entries(attrs)){
+    if (k === 'class') e.className = v;
+    else if (k === 'html') e.innerHTML = v;
+    else if (k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of [].concat(children)) if (c) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+  return e;
+}
+function uid(){ return Math.random().toString(36).slice(2, 10); }
+
+/* ---------------------------------------------------------------------
+   SPOTIFY AUTH — Authorization Code with PKCE (nincs backend hozzá)
+   --------------------------------------------------------------------- */
+const Spotify = (() => {
+  const LS_KEY = 'idogep_spotify_tokens';
+
+  function base64url(buf){
+    return btoa(String.fromCharCode(...new Uint8Array(buf)))
+      .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  }
+  async function sha256(str){
+    const data = new TextEncoder().encode(str);
+    return await crypto.subtle.digest('SHA-256', data);
+  }
+  function randomString(len=64){
+    const arr = new Uint8Array(len);
+    crypto.getRandomValues(arr);
+    return base64url(arr).slice(0, len);
+  }
+
+  function getTokens(){
+    try { return JSON.parse(localStorage.getItem(LS_KEY)); } catch { return null; }
+  }
+  function setTokens(t){ localStorage.setItem(LS_KEY, JSON.stringify(t)); }
+  function clearTokens(){ localStorage.removeItem(LS_KEY); }
+
+  async function login(){
+    const verifier = randomString(64);
+    sessionStorage.setItem('pkce_verifier', verifier);
+    const challenge = base64url(await sha256(verifier));
+    const params = new URLSearchParams({
+      client_id: SPOTIFY_CLIENT_ID,
+      response_type: 'code',
+      redirect_uri: REDIRECT_URI,
+      scope: SPOTIFY_SCOPES,
+      code_challenge_method: 'S256',
+      code_challenge: challenge
+    });
+    window.location.href = `https://accounts.spotify.com/authorize?${params}`;
+  }
+
+  async function handleRedirect(){
+    const url = new URL(window.location.href);
+    const code = url.searchParams.get('code');
+    if (!code) return false;
+    const verifier = sessionStorage.getItem('pkce_verifier');
+    const body = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code, redirect_uri: REDIRECT_URI,
+      client_id: SPOTIFY_CLIENT_ID, code_verifier: verifier
+    });
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body
+    });
+    if (!res.ok){ toast('Spotify bejelentkezés sikertelen.'); return false; }
+    const data = await res.json();
+    setTokens({ access_token: data.access_token, refresh_token: data.refresh_token,
+      expires_at: Date.now() + data.expires_in*1000 });
+    window.history.replaceState({}, '', REDIRECT_URI);
+    return true;
+  }
+
+  async function refresh(){
+    const t = getTokens();
+    if (!t || !t.refresh_token) return null;
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token', refresh_token: t.refresh_token, client_id: SPOTIFY_CLIENT_ID
+    });
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const merged = { access_token: data.access_token,
+      refresh_token: data.refresh_token || t.refresh_token,
+      expires_at: Date.now() + data.expires_in*1000 };
+    setTokens(merged);
+    return merged;
+  }
+
+  async function getValidToken(){
+    let t = getTokens();
+    if (!t) return null;
+    if (Date.now() > t.expires_at - 30000){ t = await refresh(); }
+    return t ? t.access_token : null;
+  }
+
+  async function api(path, opts={}){
+    const token = await getValidToken();
+    if (!token) throw new Error('NOT_LOGGED_IN');
+    const res = await fetch(`https://api.spotify.com/v1${path}`, {
+      ...opts,
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers||{}) }
+    });
+    if (res.status === 204) return null;
+    if (!res.ok){
+      const txt = await res.text();
+      throw new Error(`Spotify API hiba (${res.status}): ${txt}`);
+    }
+    const ct = res.headers.get('content-type') || '';
+    return ct.includes('application/json') ? res.json() : null;
+  }
+
+  async function me(){ return api('/me'); }
+  async function search(query){
+    const q = encodeURIComponent(query);
+    const data = await api(`/search?q=${q}&type=track&limit=12`);
+    return (data.tracks?.items || []).map(normalizeTrack);
+  }
+  function normalizeTrack(t){
+    const year = (t.album?.release_date || '').slice(0,4);
+    return {
+      id: t.id, uri: t.uri, name: t.name,
+      artist: (t.artists||[]).map(a=>a.name).join(', '),
+      year: parseInt(year, 10) || null,
+      image: t.album?.images?.[2]?.url || t.album?.images?.[0]?.url || null
+    };
+  }
+  async function getActiveDeviceId(){
+    const data = await api('/me/player/devices');
+    const devices = data?.devices || [];
+    const active = devices.find(d => d.is_active) || devices[0];
+    return active ? active.id : null;
+  }
+  async function playTrack(uri, positionMs=30000){
+    const deviceId = await getActiveDeviceId();
+    if (!deviceId) throw new Error('NO_DEVICE');
+    await api(`/me/player/play?device_id=${deviceId}`, {
+      method: 'PUT', body: JSON.stringify({ uris: [uri], position_ms: positionMs })
+    });
+  }
+  async function pause(){
+    try { const deviceId = await getActiveDeviceId(); if (deviceId) await api(`/me/player/pause?device_id=${deviceId}`, {method:'PUT'}); }
+    catch(e){ /* nincs mit tenni, ha nincs aktív lejátszó */ }
+  }
+
+  return { login, handleRedirect, getTokens, clearTokens, me, search, playTrack, pause };
+})();
+
+/* ---------------------------------------------------------------------
+   FIRESTORE — playlistek (publikus/privát)
+   --------------------------------------------------------------------- */
+const Store = {
+  async savePlaylist(playlist){
+    if (!db) throw new Error('NO_DB');
+    const ref = playlist.id ? db.collection('playlists').doc(playlist.id) : db.collection('playlists').doc();
+    playlist.id = ref.id;
+    playlist.updatedAt = Date.now();
+    await ref.set(playlist);
+    return playlist;
+  },
+  async deletePlaylist(id){
+    if (!db) return;
+    await db.collection('playlists').doc(id).delete();
+  },
+  async myPlaylists(ownerId){
+    if (!db) return [];
+    const snap = await db.collection('playlists').where('ownerId','==', ownerId).get();
+    return snap.docs.map(d => d.data());
+  },
+  async publicPlaylists(){
+    if (!db) return [];
+    const snap = await db.collection('playlists').where('public','==', true).orderBy('updatedAt','desc').limit(50).get();
+    return snap.docs.map(d => d.data());
+  }
+};
+
+/* ---------------------------------------------------------------------
+   ALKALMAZÁS ÁLLAPOT
+   --------------------------------------------------------------------- */
+const state = {
+  tab: 'sajat',           // sajat | publikus | szerkeszto | jatek
+  user: null,             // spotify /me
+  editing: null,          // playlist szerkesztés alatt
+  searchResults: [],
+  myPlaylists: [],
+  publicPlaylists: [],
+  game: null              // aktív játék állapota
+};
+
+const TABS = [
+  { id:'sajat', label:'Saját listák' },
+  { id:'publikus', label:'Publikus listák' },
+  { id:'szerkeszto', label:'Új lista' },
+  { id:'jatek', label:'Játék' }
+];
+
+function renderTabs(){
+  const nav = document.getElementById('tabs');
+  nav.innerHTML = '';
+  TABS.forEach(t=>{
+    nav.appendChild(el('button', {
+      class: state.tab === t.id ? 'active' : '',
+      onclick: () => { state.tab = t.id; render(); }
+    }, t.label));
+  });
+}
+
+function renderAuthArea(){
+  const area = document.getElementById('authArea');
+  area.innerHTML = '';
+  if (!CONFIGURED){
+    area.appendChild(el('span', {class:'pill'}, 'nincs beállítva'));
+    return;
+  }
+  if (state.user){
+    area.appendChild(el('span', {class:'muted'}, state.user.display_name || state.user.id));
+    area.appendChild(el('button', { class:'ghost', onclick: ()=>{ Spotify.clearTokens(); state.user = null; render(); } }, 'Kilépés'));
+  } else {
+    area.appendChild(el('button', { class:'primary', onclick: ()=> Spotify.login() }, 'Spotify bejelentkezés'));
+  }
+}
+
+async function render(){
+  renderTabs();
+  renderAuthArea();
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+
+  if (!CONFIGURED){
+    app.appendChild(renderSetupWarning());
+    return;
+  }
+
+  if (!state.user){
+    app.appendChild(el('div', {class:'empty'}, [
+      el('div', {class:'big'}, 'Jelentkezz be Spotify fiókoddal'),
+      el('p', {}, 'A bejelentkezés kell a kereséshez, a saját listáidhoz és a lejátszás vezérléséhez a játék közben.')
+    ]));
+    return;
+  }
+
+  if (state.tab === 'sajat') app.appendChild(await renderMyPlaylists());
+  if (state.tab === 'publikus') app.appendChild(await renderPublicPlaylists());
+  if (state.tab === 'szerkeszto') app.appendChild(renderEditor());
+  if (state.tab === 'jatek') app.appendChild(renderGameArea());
+}
+
+function renderSetupWarning(){
+  return el('footer', {class:'setup-warning'}, [
+    el('strong', {}, 'Az app még nincs beállítva.'),
+    el('p', {}, 'Töltsd ki a fájl tetején az SPOTIFY_CLIENT_ID és FIREBASE_CONFIG változókat — lásd a README.md-t a lépésekért.')
+  ]);
+}
+
+/* --- saját listák -------------------------------------------------- */
+async function renderMyPlaylists(){
+  const wrap = el('div', {});
+  wrap.appendChild(el('h2', {}, 'Saját listáid'));
+  try{
+    state.myPlaylists = await Store.myPlaylists(state.user.id);
+  } catch(e){ wrap.appendChild(el('p',{},'Nem sikerült betölteni: '+e.message)); return wrap; }
+
+  if (!state.myPlaylists.length){
+    wrap.appendChild(el('div', {class:'empty'}, [
+      el('div', {class:'big'}, 'Még nincs listád'),
+      el('p', {}, 'Hozz létre egyet az "Új lista" fülön.')
+    ]));
+    return wrap;
+  }
+  state.myPlaylists.forEach(pl => wrap.appendChild(playlistCard(pl, true)));
+  return wrap;
+}
+
+async function renderPublicPlaylists(){
+  const wrap = el('div', {});
+  wrap.appendChild(el('h2', {}, 'Publikus listák'));
+  wrap.appendChild(el('p', {}, 'Bárki által közzétett, játékra kész listák.'));
+  try{
+    state.publicPlaylists = await Store.publicPlaylists();
+  } catch(e){ wrap.appendChild(el('p',{},'Nem sikerült betölteni: '+e.message)); return wrap; }
+  if (!state.publicPlaylists.length){
+    wrap.appendChild(el('div', {class:'empty'}, [el('div', {class:'big'}, 'Még nincs publikus lista')]));
+    return wrap;
+  }
+  state.publicPlaylists.forEach(pl => wrap.appendChild(playlistCard(pl, false)));
+  return wrap;
+}
+
+function playlistCard(pl, mine){
+  const card = el('div', {class:'card'});
+  card.appendChild(el('div', {class:'between'}, [
+    el('h3', {}, pl.name),
+    el('span', {class:'pill' + (pl.public ? ' on':'')}, pl.public ? 'publikus' : 'privát')
+  ]));
+  card.appendChild(el('p', {}, `${pl.tracks.length} szám • ${pl.ownerName || 'ismeretlen szerkesztő'}`));
+  const row = el('div', {class:'row'});
+  row.appendChild(el('button', { class:'primary', onclick: ()=> startGameSetup(pl) }, 'Játék indítása'));
+  if (mine){
+    row.appendChild(el('button', { onclick: ()=> { state.editing = pl; state.tab='szerkeszto'; render(); } }, 'Szerkesztés'));
+    row.appendChild(el('button', { class:'ghost', onclick: async ()=>{
+      if (!confirm('Biztosan törlöd?')) return;
+      await Store.deletePlaylist(pl.id); await render();
+    } }, 'Törlés'));
+  }
+  card.appendChild(row);
+  return card;
+}
+
+/* --- lista szerkesztő ----------------------------------------------- */
+function renderEditor(){
+  const pl = state.editing || { name:'', ownerId: state.user.id, ownerName: state.user.display_name || state.user.id, public:false, tracks:[] };
+  state.editing = pl;
+
+  const wrap = el('div', {});
+  wrap.appendChild(el('h2', {}, pl.id ? 'Lista szerkesztése' : 'Új lista'));
+
+  const nameInput = el('input', { type:'text', value: pl.name, placeholder:'Lista neve, pl. "90-es évek slágerei"',
+    oninput: (e)=> pl.name = e.target.value });
+  nameInput.style.width = '100%';
+  nameInput.style.marginBottom = '.6em';
+  wrap.appendChild(nameInput);
+
+  const toggleRow = el('div', {class:'row'});
+  const toggleBtn = el('button', {
+    onclick: ()=>{ pl.public = !pl.public; render(); }
+  }, pl.public ? '🌍 Publikus — bárki láthatja' : '🔒 Privát — csak te látod');
+  toggleRow.appendChild(toggleBtn);
+  wrap.appendChild(toggleRow);
+
+  wrap.appendChild(el('h3', {}, 'Számok keresése'));
+  const searchRow = el('div', {class:'row'});
+  const searchInput = el('input', { type:'search', placeholder:'Előadó vagy cím...' });
+  searchInput.style.flex = '1';
+  const doSearch = async ()=>{
+    if (!searchInput.value.trim()) return;
+    try { state.searchResults = await Spotify.search(searchInput.value.trim()); }
+    catch(e){ toast('Keresési hiba: '+e.message); state.searchResults = []; }
+    render();
+  };
+  searchInput.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') doSearch(); });
+  searchRow.appendChild(searchInput);
+  searchRow.appendChild(el('button', { class:'primary', onclick: doSearch }, 'Keresés'));
+  wrap.appendChild(searchRow);
+
+  if (state.searchResults.length){
+    const resultsCard = el('div', {class:'card'});
+    state.searchResults.forEach(tr=>{
+      const row = trackRow(tr, true);
+      const already = pl.tracks.some(x=>x.id===tr.id);
+      row.appendChild(el('button', { disabled: already,
+        onclick: ()=>{ pl.tracks.push(tr); render(); } }, already ? '✓ hozzáadva' : 'Hozzáadás'));
+      resultsCard.appendChild(row);
+    });
+    wrap.appendChild(resultsCard);
+  }
+
+  wrap.appendChild(el('h3', {}, `Lista számai (${pl.tracks.length})`));
+  if (!pl.tracks.length){
+    wrap.appendChild(el('p', {}, 'Még nincs hozzáadott szám.'));
+  } else {
+    const listCard = el('div', {class:'card'});
+    pl.tracks.forEach(tr=>{
+      const row = trackRow(tr, false);
+      row.appendChild(el('button', { class:'ghost', onclick: ()=>{
+        pl.tracks = pl.tracks.filter(x=>x.id!==tr.id); render();
+      } }, 'Eltávolítás'));
+      listCard.appendChild(row);
+    });
+    wrap.appendChild(listCard);
+  }
+
+  const saveRow = el('div', {class:'row'});
+  saveRow.appendChild(el('button', { class:'primary', onclick: async ()=>{
+    if (!pl.name.trim()) { toast('Adj nevet a listának.'); return; }
+    if (pl.tracks.length < 4) { toast('Legalább 4 szám kell a játékhoz.'); return; }
+    try { await Store.savePlaylist(pl); toast('Mentve.'); state.editing = null; state.tab='sajat'; render(); }
+    catch(e){ toast('Mentési hiba: '+e.message); }
+  } }, 'Lista mentése'));
+  saveRow.appendChild(el('button', { class:'ghost', onclick: ()=>{ state.editing=null; state.tab='sajat'; render(); } }, 'Mégse'));
+  wrap.appendChild(saveRow);
+
+  return wrap;
+}
+
+function trackRow(tr, showYear){
+  const row = el('div', {class:'track'});
+  const art = el('div', {class:'art'});
+  if (tr.image) art.appendChild(el('img', {src: tr.image, alt:''}));
+  row.appendChild(art);
+  row.appendChild(el('div', {class:'meta'}, [
+    el('div', {class:'t'}, tr.name),
+    el('div', {class:'a'}, tr.artist)
+  ]));
+  if (showYear && tr.year) row.appendChild(el('div', {class:'year'}, String(tr.year)));
+  return row;
+}
+
+/* --- játék ------------------------------------------------------------ */
+function startGameSetup(playlist){
+  state.game = { phase:'setup', playlist, players: [], mode:'classic' };
+  state.tab = 'jatek';
+  render();
+}
+
+function renderGameArea(){
+  const g = state.game;
+  if (!g){
+    return el('div', {class:'empty'}, [
+      el('div', {class:'big'}, 'Nincs kiválasztott lista'),
+      el('p', {}, 'Válassz egy listát a "Saját listák" vagy "Publikus listák" fülön a "Játék indítása" gombbal.')
+    ]);
+  }
+  if (g.phase === 'setup') return renderGameSetup(g);
+  if (g.phase === 'play') return renderGamePlay(g);
+  if (g.phase === 'over') return renderGameOver(g);
+}
+
+function renderGameSetup(g){
+  const wrap = el('div', {});
+  wrap.appendChild(el('h2', {}, `Játék indítása — ${g.playlist.name}`));
+
+  wrap.appendChild(el('h3', {}, 'Játékmód'));
+  const modeRow = el('div', {class:'row'});
+  modeRow.appendChild(el('button', { class: g.mode==='classic' ? 'primary':'', onclick: ()=>{ g.mode='classic'; render(); } }, 'Klasszikus — csak évszám'));
+  modeRow.appendChild(el('button', { class: g.mode==='pro' ? 'primary':'', onclick: ()=>{ g.mode='pro'; render(); } }, 'Profi — évszám + előadó'));
+  wrap.appendChild(modeRow);
+  wrap.appendChild(el('p', {}, g.mode==='pro'
+    ? 'Helyes időrendi elhelyezésért 1 pont, ha az előadót is eltalálod (4 lehetőségből), +1 bónuszpont.'
+    : 'Minden helyes időrendi elhelyezés 1 pontot ér.'));
+
+  wrap.appendChild(el('h3', {}, 'Játékosok'));
+  const playersCard = el('div', {class:'card'});
+  g.players.forEach((p,i)=>{
+    const row = el('div', {class:'row between'});
+    row.appendChild(el('span', {}, p.name));
+    row.appendChild(el('button', { class:'ghost', onclick: ()=>{ g.players.splice(i,1); render(); } }, 'Eltávolít'));
+    playersCard.appendChild(row);
+  });
+  wrap.appendChild(playersCard);
+
+  const addRow = el('div', {class:'row'});
+  const nameInput = el('input', {type:'text', placeholder:'Játékos neve'});
+  addRow.appendChild(nameInput);
+  addRow.appendChild(el('button', { onclick: ()=>{
+    const n = nameInput.value.trim();
+    if (!n) return;
+    g.players.push({ id: uid(), name: n, score: 0, timeline: [] });
+    render();
+  } }, 'Hozzáadás'));
+  wrap.appendChild(addRow);
+
+  wrap.appendChild(el('div', {class:'row'}, [
+    el('button', { class:'primary', onclick: ()=>{
+      if (g.players.length < 2) { toast('Legalább 2 játékos kell.'); return; }
+      // minden játékos kap egy kezdő kártyát a saját idővonalára
+      const pool = shuffle([...g.playlist.tracks]);
+      g.players.forEach(p=>{
+        const starter = pool.pop();
+        p.timeline = [starter];
+      });
+      g.deck = pool;
+      g.turnIndex = 0;
+      g.phase = 'play';
+      g.current = null;
+      render();
+    } }, 'Kezdés') ,
+    el('button', { class:'ghost', onclick: ()=>{ state.game=null; state.tab='sajat'; render(); } }, 'Mégse')
+  ]));
+
+  return wrap;
+}
+
+function shuffle(arr){
+  const a = [...arr];
+  for (let i=a.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+  return a;
+}
+
+function renderGamePlay(g){
+  const wrap = el('div', {});
+  const player = g.players[g.turnIndex];
+
+  wrap.appendChild(el('div', {class:'scorebar'}, g.players.map((p,i)=> el('span', {
+    class:'score-chip' + (i===g.turnIndex ? ' turn':'')
+  }, [ el('span', {class:'dot' + (i===g.turnIndex?' turn':'')}), `${p.name} · ${p.score}p` ]))));
+
+  if (!g.deck.length && !g.current){
+    g.phase = 'over';
+    render();
+    return wrap;
+  }
+
+  wrap.appendChild(el('h2', {}, `${player.name} köre`));
+
+  if (!g.current){
+    wrap.appendChild(el('p', {}, `Húzz egy számot, és tippeld meg, hova illik ${player.name} idővonalán.`));
+    wrap.appendChild(el('button', { class:'primary', onclick: async ()=>{
+      const track = g.deck.pop();
+      g.current = { track, placedAt: null, guessArtist: null };
+      render();
+      try { await Spotify.playTrack(track.uri); }
+      catch(e){
+        if (String(e.message).includes('NO_DEVICE')) toast('Nincs aktív Spotify lejátszó — nyisd meg a Spotify appot a telefonodon.');
+        else toast('Lejátszási hiba: '+e.message);
+      }
+    } }, '▶ Következő szám lejátszása'));
+    return wrap;
+  }
+
+  wrap.appendChild(el('div', {class:'nowplaying'}, [
+    el('div', {class:'spinner-disc'}),
+    el('div', {}, [
+      el('div', {class:'muted'}, 'Most szól... hova illik?'),
+      el('div', {style:'font-family:var(--serif);font-size:1.1rem;'}, '???')
+    ])
+  ]));
+
+  wrap.appendChild(el('h3', {}, `${player.name} idővonala — válaszd ki, hova kerüljön az új szám`));
+  wrap.appendChild(timelineWithGaps(player.timeline, g.current.placedAt, (idx)=>{
+    g.current.placedAt = idx;
+    render();
+  }));
+
+  if (g.current.placedAt !== null){
+    if (g.mode === 'pro' && g.current.guessArtist === null){
+      const decoys = shuffle(g.playlist.tracks.filter(t=>t.id!==g.current.track.id)).slice(0,3).map(t=>t.artist);
+      const options = shuffle([g.current.track.artist, ...decoys]);
+      wrap.appendChild(el('h3', {}, 'Ki énekli?'));
+      const grid = el('div', {class:'choice-grid'});
+      options.forEach(opt=>{
+        grid.appendChild(el('button', { onclick: ()=>{ g.current.guessArtist = opt; resolveTurn(g); } }, opt));
+      });
+      wrap.appendChild(grid);
+    } else {
+      wrap.appendChild(el('button', { class:'primary', onclick: ()=> resolveTurn(g) }, 'Tipp lezárása'));
+    }
+  }
+
+  return wrap;
+}
+
+function timelineWithGaps(timeline, selected, onSelect){
+  const sorted = [...timeline].sort((a,b)=> a.year - b.year);
+  const strip = el('div', {class:'timeline-strip'});
+  strip.appendChild(gapButton(0, selected, onSelect));
+  sorted.forEach((tr, i)=>{
+    strip.appendChild(tlCard(tr));
+    strip.appendChild(gapButton(i+1, selected, onSelect));
+  });
+  return strip;
+}
+function gapButton(idx, selected, onSelect){
+  const wrap = el('div', {class:'tl-gap'});
+  wrap.appendChild(el('button', { class: selected===idx ? 'primary':'', onclick: ()=> onSelect(idx) }, selected===idx ? '✓ ide' : 'ide'));
+  return wrap;
+}
+function tlCard(tr){
+  const c = el('div', {class:'tl-card'});
+  const disc = el('div', {class:'disc'});
+  if (tr.image) disc.appendChild(el('img', {src:tr.image, alt:''}));
+  c.appendChild(disc);
+  c.appendChild(el('div', {class:'yr'}, String(tr.year)));
+  c.appendChild(el('div', {class:'name'}, tr.artist));
+  return c;
+}
+
+function resolveTurn(g){
+  const player = g.players[g.turnIndex];
+  const track = g.current.track;
+  const sorted = [...player.timeline].sort((a,b)=> a.year - b.year);
+  const before = sorted[g.current.placedAt - 1];
+  const after = sorted[g.current.placedAt];
+  const correct = (!before || before.year <= track.year) && (!after || track.year <= after.year);
+
+  let gained = 0;
+  if (correct) gained += 1;
+  if (g.mode === 'pro' && g.current.guessArtist === track.artist) gained += 1;
+  player.score += gained;
+  player.timeline.push(track); // az idővonal mindig a valós évek szerint bővül, hogy a köv. tipp korrekt legyen
+
+  toast(correct
+    ? `Talált! ${track.name} (${track.year}) — +${gained} pont`
+    : `Mellé! ${track.name} valójában ${track.year}-ből való.`);
+
+  Spotify.pause();
+  g.current = null;
+  g.turnIndex = (g.turnIndex + 1) % g.players.length;
+  render();
+}
+
+function renderGameOver(g){
+  const wrap = el('div', {});
+  wrap.appendChild(el('h2', {}, 'Vége a játéknak'));
+  const ranked = [...g.players].sort((a,b)=> b.score - a.score);
+  const card = el('div', {class:'card'});
+  ranked.forEach((p,i)=> card.appendChild(el('div', {class:'row between'}, [
+    el('span', {}, `${i+1}. ${p.name}`), el('strong', {}, `${p.score} pont`)
+  ])));
+  wrap.appendChild(card);
+  wrap.appendChild(el('button', { class:'primary', onclick: ()=>{ state.game=null; state.tab='sajat'; render(); } }, 'Vissza a listákhoz'));
+  return wrap;
+}
+
+/* ---------------------------------------------------------------------
+   INDÍTÁS
+   --------------------------------------------------------------------- */
+(async function init(){
+  if (!CONFIGURED){ render(); return; }
+  const cameFromRedirect = await Spotify.handleRedirect();
+  const tokens = Spotify.getTokens();
+  if (tokens || cameFromRedirect){
+    try { state.user = await Spotify.me(); }
+    catch(e){ Spotify.clearTokens(); }
+  }
+  render();
+})();
+</script>
+</body>
+</html>
