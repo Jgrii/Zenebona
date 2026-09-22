@@ -106,6 +106,12 @@
   .track .meta .t{ font-weight:600; font-size:.94rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .track .meta .a{ font-size:.82rem; color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .track .year{ font-family: var(--serif); color:var(--gold); font-size:1rem; flex:0 0 auto; }
+  .track .year-input{
+    font-family: var(--serif); color:var(--gold); font-size:1rem; flex:0 0 auto;
+    width:4.2em; text-align:center; background: var(--bg); border:1px solid var(--line);
+    border-radius: var(--radius); padding:.3em .2em;
+  }
+  .track .year-input:hover{ border-color: var(--gold-dim); }
 
   .empty{ text-align:center; padding: 2.2rem 1rem; color:var(--ink-dim); }
   .empty .big{ font-family: var(--serif); font-size:1.3rem; color:var(--ink); margin-bottom:.3em; }
@@ -597,12 +603,13 @@ function renderEditor(){
   }
 
   wrap.appendChild(el('h3', {}, `Lista számai (${pl.tracks.length})`));
+  if (pl.tracks.length) wrap.appendChild(el('p', {class:'muted'}, 'Az évszám mezőbe kattintva módosíthatod, ha a Spotify rossz kiadási dátumot ad meg (pl. válogatásalbumnál).'));
   if (!pl.tracks.length){
     wrap.appendChild(el('p', {}, 'Még nincs hozzáadott szám.'));
   } else {
     const listCard = el('div', {class:'card'});
     pl.tracks.forEach(tr=>{
-      const row = trackRow(tr, false);
+      const row = trackRow(tr, false, true);
       row.appendChild(el('button', { class:'ghost', onclick: ()=>{
         pl.tracks = pl.tracks.filter(x=>x.id!==tr.id); render();
       } }, 'Eltávolítás'));
@@ -624,7 +631,7 @@ function renderEditor(){
   return wrap;
 }
 
-function trackRow(tr, showYear){
+function trackRow(tr, showYear, editableYear=false){
   const row = el('div', {class:'track'});
   const art = el('div', {class:'art'});
   if (tr.image) art.appendChild(el('img', {src: tr.image, alt:''}));
@@ -633,7 +640,24 @@ function trackRow(tr, showYear){
     el('div', {class:'t'}, tr.name),
     el('div', {class:'a'}, tr.artist)
   ]));
-  if (showYear && tr.year) row.appendChild(el('div', {class:'year'}, String(tr.year)));
+  if (editableYear){
+    row.appendChild(el('input', {
+      type: 'number', class: 'year-input', value: tr.year != null ? String(tr.year) : '',
+      title: 'Kiadási év — módosítsd, ha a Spotify rossz dátumot ad meg',
+      min: '1900', max: String(new Date().getFullYear()),
+      onchange: (e)=>{
+        const v = parseInt(e.target.value, 10);
+        if (Number.isInteger(v) && v >= 1900 && v <= new Date().getFullYear()){
+          tr.year = v;
+        } else {
+          e.target.value = tr.year != null ? String(tr.year) : '';
+          toast('Érvénytelen évszám.');
+        }
+      }
+    }));
+  } else if (showYear && tr.year){
+    row.appendChild(el('div', {class:'year'}, String(tr.year)));
+  }
   return row;
 }
 
