@@ -962,11 +962,9 @@ function renderOutcomeCard(g){
 function renderStealOffer(g){
   const player = g.players[g.turnIndex];
   const stealer = g.players[(g.turnIndex+1) % g.players.length];
-  const track = g.current.track;
   const box = el('div', {class:'card'});
   box.appendChild(el('h3', {}, '❌ Mellé tippelt'));
-  box.appendChild(trackRow(track, true));
-  box.appendChild(el('p', {}, `${player.name} nem találta el. A valódi év: ${track.year}.`));
+  box.appendChild(el('p', {}, `${player.name} nem találta el.`));
   box.appendChild(el('h3', {}, `${stealer.name}, megpróbálod ellopni?`));
   box.appendChild(el('p', {}, 'Helyezd el a saját idővonaladon — ha jól teszed, tiéd a pont és a kártya.'));
   const row = el('div', {class:'row'});
@@ -978,9 +976,8 @@ function renderStealOffer(g){
 
 function renderStealPlacement(g){
   const stealer = g.current.stealer;
-  const track = g.current.track;
   const box = el('div', {});
-  box.appendChild(el('h3', {}, `${stealer.name} idővonala — hova illik? (${track.year})`));
+  box.appendChild(el('h3', {}, `${stealer.name} idővonala — hova illik?`));
   box.appendChild(timelineWithGaps(stealer.timeline, g.current.stealPlacedAt, (idx)=>{ g.current.stealPlacedAt = idx; render(); }));
   if (g.current.stealPlacedAt !== null){
     box.appendChild(el('button', { class:'primary', onclick: ()=> resolveSteal(g) }, 'Lopás lezárása'));
