@@ -857,9 +857,16 @@ function renderGamePlay(g){
 
   if (!g.current){
     wrap.appendChild(el('p', {}, `Húzz egy számot, és tippeld meg, hova illik ${player.name} idővonalán.`));
+    if (g.modifiers.double){
+      wrap.appendChild(el('div', {class:'row'}, [
+        el('button', { class: g.pendingWager ? 'primary':'', onclick: ()=>{ g.pendingWager = !g.pendingWager; render(); } },
+          (g.pendingWager ? '✓ ' : '') + '🎲 Dupla vagy semmi ehhez a körhöz (helyes = +2, rossz = −1)')
+      ]));
+    }
     wrap.appendChild(el('button', { class:'primary', onclick: async ()=>{
       const track = g.deck.pop();
-      g.current = { track, placedAt: null, guessArtist: null, resolved: false, wager: false, stealState: null, stealer: null, stealPlacedAt: null, stealOutcome: null };
+      g.current = { track, placedAt: null, guessArtist: null, resolved: false, wager: !!g.pendingWager, stealState: null, stealer: null, stealPlacedAt: null, stealOutcome: null };
+      g.pendingWager = false;
       render();
       try { await Spotify.playTrack(track.uri); }
       catch(e){
@@ -883,11 +890,8 @@ function renderGamePlay(g){
     ])
   ]));
 
-  if (g.modifiers.double){
-    wrap.appendChild(el('div', {class:'row'}, [
-      el('button', { class: g.current.wager ? 'primary':'', onclick: ()=>{ g.current.wager = !g.current.wager; render(); } },
-        (g.current.wager ? '✓ ' : '') + '🎲 Dupla vagy semmi ehhez a körhöz (helyes = +2, rossz = −1)')
-    ]));
+  if (g.current.wager){
+    wrap.appendChild(el('p', {class:'muted'}, '🎲 Dupla vagy semmi ebben a körben — helyes = +2, rossz = −1 pont.'));
   }
 
   wrap.appendChild(el('h3', {}, `${player.name} idővonala — válaszd ki, hova kerüljön az új szám`));
@@ -1082,11 +1086,25 @@ function renderLightningPlay(g){
   if (!g.current){
     wrap.appendChild(el('h2', {}, '⚡ Villámkör'));
     wrap.appendChild(el('p', {}, 'Húzzatok egy számot — mindenki tippel egy évszámra, a legközelebbi tipp nyeri a kört.'));
+    if (g.modifiers.double){
+      if (!g.pendingWagers) g.pendingWagers = {};
+      wrap.appendChild(el('p', {class:'muted'}, '🎲 Ki vállalja be a duplát ebben a körben? (nyerés = +2, vesztés = −1)'));
+      const wagerCard = el('div', {class:'card'});
+      g.players.forEach(p=>{
+        wagerCard.appendChild(el('div', {class:'row between'}, [
+          el('span', {}, p.name),
+          el('button', { class: g.pendingWagers[p.id] ? 'primary':'', onclick: ()=>{ g.pendingWagers[p.id] = !g.pendingWagers[p.id]; render(); } },
+            g.pendingWagers[p.id] ? '✓ 🎲' : '🎲')
+        ]));
+      });
+      wrap.appendChild(wagerCard);
+    }
     wrap.appendChild(el('button', { class:'primary', onclick: async ()=>{
       const track = g.deck.pop();
       const guesses = {};
-      g.players.forEach(p=> guesses[p.id] = { value:'', wager:false });
+      g.players.forEach(p=> guesses[p.id] = { value:'', wager: !!(g.pendingWagers && g.pendingWagers[p.id]) });
       g.current = { track, guesses, resolved:false };
+      g.pendingWagers = {};
       render();
       try { await Spotify.playTrack(track.uri); }
       catch(e){
@@ -1113,19 +1131,13 @@ function renderLightningPlay(g){
   const guessCard = el('div', {class:'card'});
   g.players.forEach(p=>{
     const row = el('div', {class:'row between'});
-    row.appendChild(el('span', {}, p.name));
+    row.appendChild(el('span', {}, p.name + (g.current.guesses[p.id].wager ? ' 🎲' : '')));
     const inner = el('div', {class:'row'});
     inner.appendChild(el('input', {
       type:'number', placeholder:'év', style:'width:5.5em;',
       value: g.current.guesses[p.id].value,
       oninput: (e)=>{ g.current.guesses[p.id].value = e.target.value; }
     }));
-    if (g.modifiers.double){
-      inner.appendChild(el('button', {
-        class: g.current.guesses[p.id].wager ? 'primary':'',
-        onclick: ()=>{ g.current.guesses[p.id].wager = !g.current.guesses[p.id].wager; render(); }
-      }, g.current.guesses[p.id].wager ? '✓ 🎲' : '🎲'));
-    }
     row.appendChild(inner);
     guessCard.appendChild(row);
   });
