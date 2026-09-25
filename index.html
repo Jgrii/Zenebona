@@ -1103,7 +1103,7 @@ function renderLightningPlay(g){
       const track = g.deck.pop();
       const guesses = {};
       g.players.forEach(p=> guesses[p.id] = { value:'', wager: !!(g.pendingWagers && g.pendingWagers[p.id]) });
-      g.current = { track, guesses, resolved:false };
+      g.current = { track, guesses, resolved:false, guessIndex: 0, awaitingHandoff: false };
       g.pendingWagers = {};
       render();
       try { await Spotify.playTrack(track.uri); }
@@ -1123,28 +1123,47 @@ function renderLightningPlay(g){
   wrap.appendChild(el('div', {class:'nowplaying'}, [
     el('div', {class:'spinner-disc'}),
     el('div', {}, [
-      el('div', {class:'muted'}, 'Most szól... mindenki tippeljen egy évet!'),
+      el('div', {class:'muted'}, 'A szám megy — most mindenki sorban tippel, egyedül.'),
       el('div', {style:'font-family:var(--serif);font-size:1.1rem;'}, '???')
     ])
   ]));
 
-  const guessCard = el('div', {class:'card'});
-  g.players.forEach(p=>{
-    const row = el('div', {class:'row between'});
-    row.appendChild(el('span', {}, p.name + (g.current.guesses[p.id].wager ? ' 🎲' : '')));
-    const inner = el('div', {class:'row'});
-    inner.appendChild(el('input', {
-      type:'number', placeholder:'év', style:'width:5.5em;',
-      value: g.current.guesses[p.id].value,
-      oninput: (e)=>{ g.current.guesses[p.id].value = e.target.value; }
-    }));
-    row.appendChild(inner);
-    guessCard.appendChild(row);
-  });
-  wrap.appendChild(guessCard);
-  if (g.modifiers.double) wrap.appendChild(el('p', {class:'muted'}, '🎲 Dupla: a kör megnyerése +2 pontot ér, vesztés esetén −1 pont.'));
+  const guesser = g.players[g.current.guessIndex];
 
-  wrap.appendChild(el('button', { class:'primary', onclick: ()=> resolveLightning(g) }, 'Tippek lezárása'));
+  if (g.current.awaitingHandoff){
+    const nextGuesser = g.players[g.current.guessIndex];
+    wrap.appendChild(el('div', {class:'card'}, [
+      el('h3', {}, `Add tovább a telefont: ${nextGuesser.name}`),
+      el('p', {}, 'A többiek ne lássák a képernyőt tippeléskor.'),
+      el('button', { class:'primary', onclick: ()=>{ g.current.awaitingHandoff = false; render(); } }, `Kész vagyok, jöhet — ${nextGuesser.name}`)
+    ]));
+    return wrap;
+  }
+
+  const guessCard = el('div', {class:'card'});
+  guessCard.appendChild(el('h3', {}, `${guesser.name} tippel${g.current.guesses[guesser.id].wager ? ' 🎲' : ''}`));
+  const row = el('div', {class:'row'});
+  const input = el('input', {
+    type:'number', placeholder:'év', style:'width:7em;',
+    value: g.current.guesses[guesser.id].value,
+    oninput: (e)=>{ g.current.guesses[guesser.id].value = e.target.value; }
+  });
+  row.appendChild(input);
+  row.appendChild(el('button', { class:'primary', onclick: ()=>{
+    const v = g.current.guesses[guesser.id].value;
+    if (!v || !Number.isInteger(parseInt(v,10))){ toast('Adj meg egy évszámot.'); return; }
+    g.current.guessIndex += 1;
+    if (g.current.guessIndex >= g.players.length){
+      resolveLightning(g);
+    } else {
+      g.current.awaitingHandoff = true;
+      render();
+    }
+  } }, 'Tipp rögzítése'));
+  guessCard.appendChild(row);
+  wrap.appendChild(guessCard);
+  wrap.appendChild(el('p', {class:'muted'}, `${g.current.guessIndex + 1}. / ${g.players.length} játékos tippel.`));
+
   return wrap;
 }
 
