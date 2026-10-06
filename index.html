@@ -838,7 +838,7 @@ function renderGameSetup(g){
 
   wrap.appendChild(el('div', {class:'row'}, [
     el('button', { class:'primary', onclick: ()=>{
-      if (g.players.length < 2) { toast('Legalább 2 játékos kell.'); return; }
+      if (g.players.length < 1) { toast('Adj hozzá legalább egy játékost.'); return; }
       const seen = new Set();
       let sourceTracks = [...g.playlist.tracks];
       if (g.modifiers.mix) g.extraPlaylists.forEach(pl => sourceTracks.push(...pl.tracks));
@@ -1345,6 +1345,12 @@ function renderGuessPlay(g){
       el('div', {class:'muted'}, `🎵 ${seconds} másodperces részlet szól...`),
       el('div', {style:'font-family:var(--serif);font-size:1.1rem;'}, `+${SNIPPET_POINTS[g.current.tierIndex]} pont, ha most eltalálod`)
     ])
+  ]));
+  wrap.appendChild(el('div', {class:'row'}, [
+    el('button', { onclick: ()=>{
+      Spotify.playSnippet(g.current.track.uri, g.current.startMs, SNIPPET_TIERS_MS[g.current.tierIndex])
+        .catch(e=> toast('Lejátszási hiba: '+e.message));
+    } }, '🔁 Részlet újra')
   ]));
   if (g.current.wager) wrap.appendChild(el('p', {class:'muted'}, '🎲 Dupla vagy semmi — eltalálva dupla pont, kifutva −1.'));
 
