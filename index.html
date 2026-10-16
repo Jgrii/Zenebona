@@ -273,6 +273,11 @@ function el(tag, attrs={}, children=[]){
     else if (k === 'disabled' || k === 'checked' || k === 'selected' || k === 'readOnly') e[k] = !!v;
     else e.setAttribute(k, v);
   }
+  if (tag === 'input' && !e.hasAttribute('autocomplete')){
+    e.setAttribute('autocomplete','off');
+    e.setAttribute('data-lpignore','true');
+    e.setAttribute('data-1p-ignore','true');
+  }
   for (const c of [].concat(children)) if (c) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
   return e;
 }
@@ -1444,6 +1449,9 @@ function renderGuessPlay(g){
 
   const input = el('input', {
     type:'text', placeholder:'Kezdj el gépelni — cím vagy előadó...',
+    id:'guessInput', name:'zenebona-szamkereso',
+    autocomplete:'off', autocapitalize:'off', autocorrect:'off', spellcheck:'false',
+    'data-lpignore':'true', 'data-1p-ignore':'true', 'data-form-type':'other',
     value: g.current.guessQuery,
     oninput: (e)=>{
       g.current.guessQuery = e.target.value;
