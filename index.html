@@ -164,6 +164,19 @@
   .choice-grid{ display:grid; grid-template-columns: 1fr 1fr; gap:.6em; margin-top:.8em; }
   .choice-grid button{ text-align:left; }
 
+  .snippet-progress{ margin:-.4rem 0 1rem 0; }
+  .snippet-bar{ height:8px; background: var(--line); border-radius:99px; overflow:hidden; }
+  .snippet-bar-fill{ height:100%; width:100%; background: var(--gold); border-radius:99px; }
+  .snippet-progress .muted{ margin-top:.35em; font-variant-numeric: tabular-nums; }
+  .suggest-list{
+    max-height: min(45vh, 20rem); overflow-y:auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+    border:1px solid var(--line); border-radius: var(--radius); background: var(--bg-raised);
+    padding:.3em; margin:.4em 0 .8em 0;
+  }
+  .suggest-item{ display:block; width:100%; text-align:left; margin-bottom:.25em; }
+  .suggest-item:last-child{ margin-bottom:0; }
+  .bad-note{ color: var(--bad); font-size:.88rem; }
+
   footer.setup-warning{
     border:1px solid var(--bad); background: rgba(201,106,90,.08); border-radius: var(--radius);
     padding: 1rem; margin: 1rem 0; font-size:.88rem; color: var(--ink-dim);
@@ -174,7 +187,7 @@
     position: fixed; left:50%; bottom: calc(env(safe-area-inset-bottom,0px) + 18px); transform:translateX(-50%);
     background: var(--bg-raised); border:1px solid var(--gold-dim); color:var(--ink);
     padding:.7em 1.1em; border-radius: var(--radius); font-size:.88rem; z-index: 30;
-    max-width: 90vw;
+    max-width: 90vw; width: max-content;
   }
 
   .modal-backdrop{
@@ -399,18 +412,31 @@ const Spotify = (() => {
       method: 'PUT', body: JSON.stringify({ uris: [uri], position_ms: positionMs })
     });
   }
+  let snippetTimer = null, snippetSeq = 0;
+  // A részlet állapota — ebből rajzolja az app az idősávot.
+  const snippet = { status: 'idle', startedAt: 0, durationMs: 0 }; // idle | loading | playing | done
+  function clearSnippetTimer(){ if (snippetTimer){ clearTimeout(snippetTimer); snippetTimer = null; } }
   async function pause(){
+    clearSnippetTimer();
+    if (snippet.status === 'loading' || snippet.status === 'playing') snippet.status = 'done';
     try { const deviceId = await getActiveDeviceId(); if (deviceId) await api(`/me/player/pause?device_id=${deviceId}`, {method:'PUT'}); }
     catch(e){ /* nincs mit tenni, ha nincs aktív lejátszó */ }
   }
-  let snippetTimer = null;
   async function playSnippet(uri, startMs, durationMs){
-    if (snippetTimer) { clearTimeout(snippetTimer); snippetTimer = null; }
-    await playTrack(uri, startMs);
-    snippetTimer = setTimeout(()=>{ pause(); snippetTimer = null; }, durationMs);
+    const mySeq = ++snippetSeq;           // ha közben újabb lejátszást kér a játékos, a régi hívás nem állít be időzítőt
+    clearSnippetTimer();
+    snippet.status = 'loading';
+    snippet.durationMs = durationMs;
+    try { await playTrack(uri, startMs); }
+    catch(e){ if (mySeq === snippetSeq) snippet.status = 'idle'; throw e; }
+    if (mySeq !== snippetSeq) return;
+    snippet.startedAt = performance.now();
+    snippet.status = 'playing';
+    snippetTimer = setTimeout(()=>{ snippetTimer = null; snippet.status = 'done'; pause(); }, durationMs);
   }
+  function snippetInfo(){ return { ...snippet }; }
 
-  return { login, handleRedirect, getTokens, clearTokens, me, search, playTrack, playSnippet, pause };
+  return { login, handleRedirect, getTokens, clearTokens, me, search, playTrack, playSnippet, snippetInfo, pause };
 })();
 
 /* ---------------------------------------------------------------------
@@ -693,7 +719,9 @@ function trackRow(tr, showYear, editableYear=false){
 }
 
 /* --- játék ------------------------------------------------------------ */
-const TARGET_OPTIONS = { classic: [10, 15, 20], pro: [20, 25, 30], lightning: [10, 15, 20], guess: [10, 15, 20] };
+const TARGET_OPTIONS = { classic: [10, 15, 20], pro: [20, 25, 30], lightning: [10, 15, 20], guess: [30, 50, 80, Infinity] };
+const isEndless = (g) => g.targetScore === Infinity;
+const fmtScore = (g, p) => isEndless(g) ? `${p.name} · ${p.score}p` : `${p.name} · ${p.score}/${g.targetScore}p`;
 const MODE_LABELS = { classic: 'Klasszikus', pro: 'Profi', lightning: 'Villámkör', guess: 'Találd ki a számot!' };
 const SNIPPET_TIERS_MS = [1000, 3000, 6000, 10000, 15000];
 const SNIPPET_POINTS   = [5, 4, 3, 2, 1];
@@ -747,7 +775,7 @@ function renderGameSetup(g){
   wrap.appendChild(el('p', {},
     g.mode==='pro' ? 'Helyes időrendi elhelyezésért 1 pont, ha az előadót is eltalálod (4 lehetőségből), +1 bónuszpont.' :
     g.mode==='lightning' ? 'Nincs idővonal — a lejátszott számra mindenki egyszerre tippel egy évszámot, a legközelebbi tipp nyeri a kört.' :
-    g.mode==='guess' ? 'Egyre hosszabb részletekből (1, 3, 6, 10, 15 mp) kell kitalálni a számot — minél rövidebbről ismered fel, annál több pont jár.' :
+    g.mode==='guess' ? 'Egyre hosszabb részletekből (1, 3, 6, 10, 15 mp) kell kitalálni a számot — minél rövidebbről ismered fel, annál több pont jár. Rossz tipp után nem ér véget a kör: jön a következő, hosszabb részlet, kevesebb pontért.' :
     'Minden helyes időrendi elhelyezés 1 pontot ér. Rossz tipp esetén a szám nem kerül be az idővonaladba.'
   ));
 
@@ -762,10 +790,12 @@ function renderGameSetup(g){
   wrap.appendChild(el('h3', {}, 'Meddig menjen a játék?'));
   const targetRow = el('div', {class:'row'});
   TARGET_OPTIONS[g.mode].forEach(t=>{
-    targetRow.appendChild(el('button', { class: g.targetScore===t ? 'primary':'', onclick: ()=>{ g.targetScore=t; render(); } }, `${t} pont`));
+    targetRow.appendChild(el('button', { class: g.targetScore===t ? 'primary':'', onclick: ()=>{ g.targetScore=t; render(); } }, t === Infinity ? '∞ Végtelen' : `${t} pont`));
   });
   wrap.appendChild(targetRow);
-  wrap.appendChild(el('p', {}, `Aki elsőként eléri a ${g.targetScore} pontot, megnyeri a játékot.`));
+  wrap.appendChild(el('p', {}, isEndless(g)
+    ? 'A játék nem ér véget — addig megy, amíg ki nem léptek az oldalról. Ha elfogy a lista, újrakeveri a számokat.'
+    : `Aki elsőként eléri a ${g.targetScore} pontot, megnyeri a játékot.`));
 
   wrap.appendChild(el('h3', {}, 'Extra szabályok'));
   wrap.appendChild(el('p', {class:'muted'}, 'Bármelyik játékmódhoz hozzáadhatók, ha úgy szeretnétek játszani.'));
@@ -879,7 +909,7 @@ function renderGamePlay(g){
 
   wrap.appendChild(el('div', {class:'scorebar'}, g.players.map((p,i)=> el('span', {
     class:'score-chip' + (i===g.turnIndex ? ' turn':'')
-  }, [ el('span', {class:'dot' + (i===g.turnIndex?' turn':'')}), `${p.name} · ${p.score}/${g.targetScore}p` ]))));
+  }, [ el('span', {class:'dot' + (i===g.turnIndex?' turn':'')}), fmtScore(g, p) ]))));
 
   if (!g.deck.length && !g.current){
     g.phase = 'over';
@@ -1109,7 +1139,7 @@ function renderLightningPlay(g){
   const wrap = el('div', {});
   wrap.appendChild(el('div', {class:'scorebar'}, g.players.map((p,i)=> el('span', {
     class:'score-chip' + (i===g.turnIndex ? ' turn':'')
-  }, [ el('span', {class:'dot' + (i===g.turnIndex?' turn':'')}), `${p.name} · ${p.score}/${g.targetScore}p` ]))));
+  }, [ el('span', {class:'dot' + (i===g.turnIndex?' turn':'')}), fmtScore(g, p) ]))));
 
   if (!g.deck.length && !g.current){
     g.phase = 'over';
@@ -1264,6 +1294,11 @@ function nextRound(g){
 }
 
 /* --- találd ki a számot! ------------------------------------------------ */
+// Ékezet- és kisbetű-független összehasonlításhoz: á=a, ő=o, ü=u stb.
+function normText(s){
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 function guessModePool(g){
   let pool = [...g.playlist.tracks];
   if (g.modifiers.mix) g.extraPlaylists.forEach(pl => pool.push(...pl.tracks));
@@ -1274,20 +1309,70 @@ function guessModePool(g){
 function populateGuessSuggestions(g, box){
   if (!box) return;
   box.innerHTML = '';
-  const q = g.current.guessQuery.trim().toLowerCase();
-  if (!q) return;
+  // Több szóra is működik: minden beírt szónak szerepelnie kell a címben vagy az előadó nevében (bármilyen sorrendben).
+  const tokens = normText(g.current.guessQuery).split(' ').filter(Boolean);
+  if (!tokens.length) return;
+  const tried = new Set(g.current.wrongGuesses.map(t => t.id));
   const matches = guessModePool(g)
-    .filter(t => t.name.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q))
-    .slice(0, 6);
+    .filter(t => { const hay = normText(t.name + ' ' + t.artist); return tokens.every(tok => hay.includes(tok)); })
+    .sort((a, b) => a.artist.localeCompare(b.artist, 'hu') || a.name.localeCompare(b.name, 'hu'));
   if (!matches.length){
     box.appendChild(el('div', {class:'muted'}, 'Nincs találat.'));
     return;
   }
+  box.appendChild(el('div', {class:'muted'}, `${matches.length} találat`));
+  const list = el('div', {class:'suggest-list'});
   matches.forEach(t=>{
-    box.appendChild(el('button', {
-      class:'ghost', style:'display:block;width:100%;text-align:left;margin-bottom:.3em;',
+    const wasWrong = tried.has(t.id);
+    list.appendChild(el('button', {
+      class:'ghost suggest-item', disabled: wasWrong,
       onclick: ()=> submitGuess(g, t)
-    }, `${t.name} — ${t.artist}`));
+    }, `${wasWrong ? '✗ ' : ''}${t.name} — ${t.artist}`));
+  });
+  box.appendChild(list);
+}
+
+/* idősáv: mennyi van még hátra a részletből */
+function snippetProgressBar(){
+  return el('div', {class:'snippet-progress'}, [
+    el('div', {class:'snippet-bar'}, [ el('div', {class:'snippet-bar-fill', id:'snippetFill'}) ]),
+    el('div', {class:'muted', id:'snippetTime'}, ' ')
+  ]);
+}
+
+let snippetLoopRunning = false;
+function ensureSnippetLoop(){
+  if (snippetLoopRunning) return;
+  snippetLoopRunning = true;
+  const tick = ()=>{
+    const fill = document.getElementById('snippetFill');
+    const label = document.getElementById('snippetTime');
+    if (!fill || !label){ snippetLoopRunning = false; return; }   // másik képernyőre léptünk
+    const s = Spotify.snippetInfo();
+    if (s.status === 'loading'){
+      fill.style.width = '100%';
+      label.textContent = 'Indul…';
+    } else if (s.status === 'playing'){
+      const remaining = Math.max(0, s.durationMs - (performance.now() - s.startedAt));
+      fill.style.width = (remaining / s.durationMs * 100) + '%';
+      label.textContent = `Hátralévő idő: ${(remaining / 1000).toFixed(1).replace('.', ',')} mp`;
+    } else {
+      fill.style.width = s.status === 'done' ? '0%' : '100%';
+      label.textContent = s.status === 'done' ? 'A részlet véget ért — a „Részlet újra” gombbal újrajátszhatod.' : 'A részlet még nem indult el.';
+      snippetLoopRunning = false;
+      return;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+function playGuessSnippet(g){
+  const p = Spotify.playSnippet(g.current.track.uri, g.current.startMs, SNIPPET_TIERS_MS[g.current.tierIndex]);
+  ensureSnippetLoop();
+  return p.catch(e=>{
+    if (String(e.message).includes('NO_DEVICE')) toast('Nincs aktív Spotify lejátszó — nyisd meg a Spotify appot a telefonodon.');
+    else toast('Lejátszási hiba: '+e.message);
   });
 }
 
@@ -1297,13 +1382,17 @@ function renderGuessPlay(g){
 
   wrap.appendChild(el('div', {class:'scorebar'}, g.players.map((p,i)=> el('span', {
     class:'score-chip' + (i===g.turnIndex ? ' turn':'')
-  }, [ el('span', {class:'dot' + (i===g.turnIndex?' turn':'')}), `${p.name} · ${p.score}/${g.targetScore}p` ]))));
+  }, [ el('span', {class:'dot' + (i===g.turnIndex?' turn':'')}), fmtScore(g, p) ]))));
 
   if (!g.deck.length && !g.current){
-    g.phase = 'over';
-    g.winner = null;
-    render();
-    return wrap;
+    if (isEndless(g)){
+      g.deck = shuffle(guessModePool(g));   // végtelen módban elfogyott a lista → újrakeverjük
+    } else {
+      g.phase = 'over';
+      g.winner = null;
+      render();
+      return wrap;
+    }
   }
 
   wrap.appendChild(el('h2', {}, `${player.name} köre`));
@@ -1316,19 +1405,15 @@ function renderGuessPlay(g){
           (g.pendingWager ? '✓ ' : '') + '🎲 Dupla vagy semmi ehhez a körhöz (eltalálva = dupla pont, kifutva = −1)')
       ]));
     }
-    wrap.appendChild(el('button', { class:'primary', onclick: async ()=>{
+    wrap.appendChild(el('button', { class:'primary', onclick: ()=>{
       const track = g.deck.pop();
       const startMs = (g.snippetStart === 'random' && track.duration_ms)
         ? Math.floor(Math.random() * Math.max(1, track.duration_ms - 16000))
         : 0;
-      g.current = { track, startMs, tierIndex: 0, resolved: false, wager: !!g.pendingWager, guessQuery: '', correct: null, gainedPoints: 0, guessedTrack: null };
+      g.current = { track, startMs, tierIndex: 0, resolved: false, wager: !!g.pendingWager, guessQuery: '', correct: null, gainedPoints: 0, wrongGuesses: [] };
       g.pendingWager = false;
       render();
-      try { await Spotify.playSnippet(track.uri, startMs, SNIPPET_TIERS_MS[0]); }
-      catch(e){
-        if (String(e.message).includes('NO_DEVICE')) toast('Nincs aktív Spotify lejátszó — nyisd meg a Spotify appot a telefonodon.');
-        else toast('Lejátszási hiba: '+e.message);
-      }
+      playGuessSnippet(g);
     } }, '▶ Részlet lejátszása'));
     return wrap;
   }
@@ -1338,21 +1423,24 @@ function renderGuessPlay(g){
     return wrap;
   }
 
-  const seconds = SNIPPET_TIERS_MS[g.current.tierIndex] / 1000;
+  const tier = g.current.tierIndex;
+  const seconds = SNIPPET_TIERS_MS[tier] / 1000;
+  const worth = SNIPPET_POINTS[tier] * (g.current.wager ? 2 : 1);
   wrap.appendChild(el('div', {class:'nowplaying'}, [
     el('div', {class:'spinner-disc'}),
     el('div', {}, [
-      el('div', {class:'muted'}, `🎵 ${seconds} másodperces részlet szól...`),
-      el('div', {style:'font-family:var(--serif);font-size:1.1rem;'}, `+${SNIPPET_POINTS[g.current.tierIndex]} pont, ha most eltalálod`)
+      el('div', {class:'muted'}, `🎵 ${seconds} másodperces részlet`),
+      el('div', {style:'font-family:var(--serif);font-size:1.1rem;'}, `+${worth} pont, ha most eltalálod`)
     ])
   ]));
+  wrap.appendChild(snippetProgressBar());
   wrap.appendChild(el('div', {class:'row'}, [
-    el('button', { onclick: ()=>{
-      Spotify.playSnippet(g.current.track.uri, g.current.startMs, SNIPPET_TIERS_MS[g.current.tierIndex])
-        .catch(e=> toast('Lejátszási hiba: '+e.message));
-    } }, '🔁 Részlet újra')
+    el('button', { onclick: ()=> playGuessSnippet(g) }, '🔁 Részlet újra')
   ]));
   if (g.current.wager) wrap.appendChild(el('p', {class:'muted'}, '🎲 Dupla vagy semmi — eltalálva dupla pont, kifutva −1.'));
+  if (g.current.wrongGuesses.length){
+    wrap.appendChild(el('p', {class:'bad-note'}, `❌ Eddigi rossz tippek: ${g.current.wrongGuesses.map(t=>`„${t.name}”`).join(', ')}`));
+  }
 
   const input = el('input', {
     type:'text', placeholder:'Kezdj el gépelni — cím vagy előadó...',
@@ -1370,58 +1458,80 @@ function renderGuessPlay(g){
   populateGuessSuggestions(g, suggestionsBox);
   wrap.appendChild(suggestionsBox);
 
-  if (g.current.tierIndex < SNIPPET_TIERS_MS.length - 1){
+  if (tier < SNIPPET_TIERS_MS.length - 1){
     wrap.appendChild(el('button', { class:'ghost', onclick: ()=> requestLongerClip(g) }, 'Nem tudom — hosszabb részletet kérek'));
   } else {
     wrap.appendChild(el('button', { class:'ghost', onclick: ()=> requestLongerClip(g) }, 'Feladom ebben a körben'));
   }
 
+  ensureSnippetLoop();
   return wrap;
 }
 
-function submitGuess(g, guessedTrack){
-  Spotify.pause();
+function failGuessRound(g){
   const player = g.players[g.turnIndex];
-  const correct = guessedTrack.id === g.current.track.id;
-  let gained = 0;
-  if (correct) gained = SNIPPET_POINTS[g.current.tierIndex] * (g.current.wager ? 2 : 1);
-  else if (g.current.wager) gained = -1;
+  const gained = g.current.wager ? -1 : 0;
   player.score = Math.max(0, player.score + gained);
   g.current.resolved = true;
-  g.current.correct = correct;
+  g.current.correct = false;
   g.current.gainedPoints = gained;
-  g.current.guessedTrack = guessedTrack;
   render();
 }
 
-function requestLongerClip(g){
-  Spotify.pause();
-  if (g.current.tierIndex < SNIPPET_TIERS_MS.length - 1){
-    g.current.tierIndex += 1;
-    g.current.guessQuery = '';
+function submitGuess(g, guessedTrack){
+  const player = g.players[g.turnIndex];
+  const cur = g.current;
+
+  if (guessedTrack.id === cur.track.id){
+    Spotify.pause();
+    const gained = SNIPPET_POINTS[cur.tierIndex] * (cur.wager ? 2 : 1);
+    player.score += gained;
+    cur.resolved = true;
+    cur.correct = true;
+    cur.gainedPoints = gained;
     render();
-    Spotify.playSnippet(g.current.track.uri, g.current.startMs, SNIPPET_TIERS_MS[g.current.tierIndex])
-      .catch(e=> toast('Lejátszási hiba: '+e.message));
+    return;
+  }
+
+  // Rossz tipp: nincs vége a körnek — jön a hosszabb részlet, kevesebb pontért.
+  cur.wrongGuesses.push(guessedTrack);
+  if (cur.tierIndex < SNIPPET_TIERS_MS.length - 1){
+    cur.tierIndex += 1;
+    cur.guessQuery = '';
+    toast(`„${guessedTrack.name}” nem ez volt — jön a hosszabb részlet.`);
+    render();
+    playGuessSnippet(g);
   } else {
-    const player = g.players[g.turnIndex];
-    g.current.resolved = true;
-    g.current.correct = false;
-    g.current.gainedPoints = g.current.wager ? -1 : 0;
-    player.score = Math.max(0, player.score + g.current.gainedPoints);
+    Spotify.pause();
+    failGuessRound(g);   // az utolsó tippnél sem találta el
+  }
+}
+
+function requestLongerClip(g){
+  const cur = g.current;
+  if (cur.tierIndex < SNIPPET_TIERS_MS.length - 1){
+    cur.tierIndex += 1;
+    cur.guessQuery = '';
     render();
+    playGuessSnippet(g);   // az új lejátszás magától felülírja az előzőt, külön szünet nem kell
+  } else {
+    Spotify.pause();
+    failGuessRound(g);
   }
 }
 
 function renderGuessResult(g){
   const player = g.players[g.turnIndex];
   const track = g.current.track;
+  const wrong = g.current.wrongGuesses;
   const box = el('div', {class:'card'});
   box.appendChild(el('h3', {}, g.current.correct ? '✅ Eltaláltad!' : '❌ Nem sikerült'));
   box.appendChild(trackRow(track, true));
   if (g.current.correct){
-    box.appendChild(el('p', {}, `${player.name} ${SNIPPET_TIERS_MS[g.current.tierIndex]/1000} másodpercből ismerte fel.`));
-  } else if (g.current.guessedTrack){
-    box.appendChild(el('p', {}, `${player.name} tippje: "${g.current.guessedTrack.name}" — ez nem ez volt.`));
+    box.appendChild(el('p', {}, `${player.name} ${SNIPPET_TIERS_MS[g.current.tierIndex]/1000} másodpercből ismerte fel` +
+      (wrong.length ? ` (${wrong.length} rossz tipp után).` : '.')));
+  } else if (wrong.length){
+    box.appendChild(el('p', {}, `${player.name} rossz tippjei: ${wrong.map(t=>`„${t.name}”`).join(', ')}.`));
   } else {
     box.appendChild(el('p', {}, `${player.name} nem találta ki.`));
   }
