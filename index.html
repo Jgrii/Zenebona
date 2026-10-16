@@ -1444,7 +1444,7 @@ function renderGuessPlay(g){
 
   const input = el('input', {
     type:'text', placeholder:'Kezdj el gépelni — cím vagy előadó...',
-    value: g.current.guessQuery, autocomplete="off",
+    value: g.current.guessQuery,
     oninput: (e)=>{
       g.current.guessQuery = e.target.value;
       populateGuessSuggestions(g, document.getElementById('guessSuggestions'));
