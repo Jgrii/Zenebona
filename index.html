@@ -1363,6 +1363,13 @@ function snippetProgressBar(doneText){
   ]);
 }
 
+function updateRevealToggle(){
+  const b = document.getElementById('revealToggle');
+  if (!b) return;
+  const st = Spotify.snippetInfo().status;
+  b.textContent = (st === 'playing' || st === 'loading') ? '⏹ Stop' : '▶ Szám lejátszása (45 mp)';
+}
+
 let snippetLoopRunning = false;
 function ensureSnippetLoop(){
   if (snippetLoopRunning) return;
@@ -1372,6 +1379,7 @@ function ensureSnippetLoop(){
     const label = document.getElementById('snippetTime');
     if (!fill || !label){ snippetLoopRunning = false; return; }   // másik képernyőre léptünk
     const s = Spotify.snippetInfo();
+    updateRevealToggle();
     if (s.status === 'loading'){
       fill.style.width = '100%';
       label.textContent = 'Indul…';
@@ -1518,6 +1526,7 @@ function renderGuessPlay(g){
 
 function failGuessRound(g){
   const player = g.players[g.turnIndex];
+  Spotify.pause();
   const gained = g.current.wager ? -1 : 0;
   player.score = Math.max(0, player.score + gained);
   g.current.resolved = true;
@@ -1525,7 +1534,6 @@ function failGuessRound(g){
   g.current.gainedPoints = gained;
   recordGuessRound(player, false);
   render();
-  playRevealClip(g);
 }
 
 function submitGuess(g, guessedTrack){
@@ -1533,6 +1541,7 @@ function submitGuess(g, guessedTrack){
   const cur = g.current;
 
   if (guessedTrack.id === cur.track.id){
+    Spotify.pause();   // a tippelős részlet leáll, a 45 mp-et a játékos indítja
     const gained = SNIPPET_POINTS[cur.tierIndex] * (cur.wager ? 2 : 1);
     player.score += gained;
     recordGuessRound(player, true);
@@ -1540,7 +1549,6 @@ function submitGuess(g, guessedTrack){
     cur.correct = true;
     cur.gainedPoints = gained;
     render();
-    playRevealClip(g);
     return;
   }
 
@@ -1592,10 +1600,14 @@ function renderGuessResult(g){
       box.appendChild(el('p', {class:'bad-note'}, `A ${g.current.prevStreak} számos sorozatod megszakadt.`));
     }
   }
-  box.appendChild(snippetProgressBar('A részlet véget ért.'));
+  box.appendChild(snippetProgressBar('Nyomd meg a gombot a szám lejátszásához.'));
   box.appendChild(el('div', {class:'row'}, [
-    el('button', { onclick: ()=> playRevealClip(g) }, '🔁 Szám újra'),
-    el('button', { onclick: ()=>{ Spotify.pause(); } }, '⏹ Megállít')
+    el('button', { id:'revealToggle', onclick: ()=>{
+      const st = Spotify.snippetInfo().status;
+      if (st === 'playing' || st === 'loading') Spotify.pause();
+      else playRevealClip(g);
+      updateRevealToggle();
+    } }, '▶ Szám lejátszása (45 mp)')
   ]));
   box.appendChild(el('button', { class:'primary', onclick: ()=> nextTurn(g) }, 'Következő játékos'));
   ensureSnippetLoop();
