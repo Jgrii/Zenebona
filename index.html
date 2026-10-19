@@ -726,7 +726,25 @@ function trackRow(tr, showYear, editableYear=false){
 /* --- játék ------------------------------------------------------------ */
 const TARGET_OPTIONS = { classic: [10, 15, 20], pro: [20, 25, 30], lightning: [10, 15, 20], guess: [30, 50, 80, Infinity] };
 const isEndless = (g) => g.targetScore === Infinity;
-const fmtScore = (g, p) => isEndless(g) ? `${p.name} · ${p.score}p` : `${p.name} · ${p.score}/${g.targetScore}p`;
+const fmtScore = (g, p) => {
+  if (g.mode === 'guess' && isEndless(g)){
+    // végtelen módban: hány körből mennyit talált el + aktuális sorozat
+    const rounds = p.rounds || 0, hits = p.hits || 0, streak = p.streak || 0;
+    return `${p.name} · ${hits}/${rounds} talált` + (streak > 0 ? ` · 🔥 ${streak}` : '');
+  }
+  return isEndless(g) ? `${p.name} · ${p.score}p` : `${p.name} · ${p.score}/${g.targetScore}p`;
+};
+const CLIP_REVEAL_MS = 45000;   // eredményhirdetés után ennyi másodpercet játszunk a számból
+function recordGuessRound(p, hit){
+  p.rounds = (p.rounds || 0) + 1;
+  if (hit){
+    p.hits = (p.hits || 0) + 1;
+    p.streak = (p.streak || 0) + 1;
+    p.bestStreak = Math.max(p.bestStreak || 0, p.streak);
+  } else {
+    p.streak = 0;
+  }
+}
 const MODE_LABELS = { classic: 'Klasszikus', pro: 'Profi', lightning: 'Villámkör', guess: 'Találd ki a számot!' };
 const SNIPPET_TIERS_MS = [1000, 3000, 6000, 10000, 15000];
 const SNIPPET_POINTS   = [5, 4, 3, 2, 1];
@@ -1338,10 +1356,10 @@ function populateGuessSuggestions(g, box){
 }
 
 /* idősáv: mennyi van még hátra a részletből */
-function snippetProgressBar(){
+function snippetProgressBar(doneText){
   return el('div', {class:'snippet-progress'}, [
     el('div', {class:'snippet-bar'}, [ el('div', {class:'snippet-bar-fill', id:'snippetFill'}) ]),
-    el('div', {class:'muted', id:'snippetTime'}, ' ')
+    el('div', {class:'muted', id:'snippetTime', 'data-done': doneText || ''}, ' ')
   ]);
 }
 
@@ -1363,7 +1381,7 @@ function ensureSnippetLoop(){
       label.textContent = `Hátralévő idő: ${(remaining / 1000).toFixed(1).replace('.', ',')} mp`;
     } else {
       fill.style.width = s.status === 'done' ? '0%' : '100%';
-      label.textContent = s.status === 'done' ? 'A részlet véget ért — a „Részlet újra” gombbal újrajátszhatod.' : 'A részlet még nem indult el.';
+      label.textContent = s.status === 'done' ? (label.dataset.done || 'A részlet véget ért — a „Részlet újra” gombbal újrajátszhatod.') : 'A részlet még nem indult el.';
       snippetLoopRunning = false;
       return;
     }
@@ -1381,6 +1399,19 @@ function playGuessSnippet(g){
   });
 }
 
+function playRevealClip(g){
+  const t = g.current.track;
+  let start = g.current.startMs || 0;
+  if (t.duration_ms) start = Math.max(0, Math.min(start, t.duration_ms - CLIP_REVEAL_MS));
+  const dur = t.duration_ms ? Math.min(CLIP_REVEAL_MS, t.duration_ms - start) : CLIP_REVEAL_MS;
+  const p = Spotify.playSnippet(t.uri, start, dur);
+  ensureSnippetLoop();
+  return p.catch(e=>{
+    if (String(e.message).includes('NO_DEVICE')) toast('Nincs aktív Spotify lejátszó — nyisd meg a Spotify appot a telefonodon.');
+    else toast('Lejátszási hiba: '+e.message);
+  });
+}
+
 function renderGuessPlay(g){
   const wrap = el('div', {});
   const player = g.players[g.turnIndex];
@@ -1388,6 +1419,15 @@ function renderGuessPlay(g){
   wrap.appendChild(el('div', {class:'scorebar'}, g.players.map((p,i)=> el('span', {
     class:'score-chip' + (i===g.turnIndex ? ' turn':'')
   }, [ el('span', {class:'dot' + (i===g.turnIndex?' turn':'')}), fmtScore(g, p) ]))));
+
+  if (isEndless(g)){
+    wrap.appendChild(el('div', {class:'row', style:'justify-content:flex-end;margin:-.4rem 0 .8rem;'}, [
+      el('button', { class:'ghost', onclick: ()=>{
+        if (!confirm('Biztosan befejezed a játékot?')) return;
+        Spotify.pause(); g.current = null; g.winner = null; g.endedByUser = true; g.phase = 'over'; render();
+      } }, '🏁 Játék befejezése')
+    ]));
+  }
 
   if (!g.deck.length && !g.current){
     if (isEndless(g)){
@@ -1415,7 +1455,7 @@ function renderGuessPlay(g){
       const startMs = (g.snippetStart === 'random' && track.duration_ms)
         ? Math.floor(Math.random() * Math.max(1, track.duration_ms - 16000))
         : 0;
-      g.current = { track, startMs, tierIndex: 0, resolved: false, wager: !!g.pendingWager, guessQuery: '', correct: null, gainedPoints: 0, wrongGuesses: [] };
+      g.current = { track, startMs, tierIndex: 0, resolved: false, wager: !!g.pendingWager, guessQuery: '', correct: null, gainedPoints: 0, wrongGuesses: [], prevStreak: player.streak || 0 };
       g.pendingWager = false;
       render();
       playGuessSnippet(g);
@@ -1483,7 +1523,9 @@ function failGuessRound(g){
   g.current.resolved = true;
   g.current.correct = false;
   g.current.gainedPoints = gained;
+  recordGuessRound(player, false);
   render();
+  playRevealClip(g);
 }
 
 function submitGuess(g, guessedTrack){
@@ -1491,13 +1533,14 @@ function submitGuess(g, guessedTrack){
   const cur = g.current;
 
   if (guessedTrack.id === cur.track.id){
-    Spotify.pause();
     const gained = SNIPPET_POINTS[cur.tierIndex] * (cur.wager ? 2 : 1);
     player.score += gained;
+    recordGuessRound(player, true);
     cur.resolved = true;
     cur.correct = true;
     cur.gainedPoints = gained;
     render();
+    playRevealClip(g);
     return;
   }
 
@@ -1510,7 +1553,6 @@ function submitGuess(g, guessedTrack){
     render();
     playGuessSnippet(g);
   } else {
-    Spotify.pause();
     failGuessRound(g);   // az utolsó tippnél sem találta el
   }
 }
@@ -1523,7 +1565,6 @@ function requestLongerClip(g){
     render();
     playGuessSnippet(g);   // az új lejátszás magától felülírja az előzőt, külön szünet nem kell
   } else {
-    Spotify.pause();
     failGuessRound(g);
   }
 }
@@ -1544,23 +1585,42 @@ function renderGuessResult(g){
     box.appendChild(el('p', {}, `${player.name} nem találta ki.`));
   }
   box.appendChild(el('p', {}, el('strong', {}, `${fmtPts(g.current.gainedPoints)} pont ${player.name}-nak.`)));
+  if (isEndless(g)){
+    if (g.current.correct && player.streak >= 2){
+      box.appendChild(el('p', {}, `🔥 ${player.streak} eltalált szám egymás után${player.streak === player.bestStreak ? ' — ez a legjobb sorozatod!' : '.'}`));
+    } else if (!g.current.correct && g.current.prevStreak >= 2){
+      box.appendChild(el('p', {class:'bad-note'}, `A ${g.current.prevStreak} számos sorozatod megszakadt.`));
+    }
+  }
+  box.appendChild(snippetProgressBar('A részlet véget ért.'));
+  box.appendChild(el('div', {class:'row'}, [
+    el('button', { onclick: ()=> playRevealClip(g) }, '🔁 Szám újra'),
+    el('button', { onclick: ()=>{ Spotify.pause(); } }, '⏹ Megállít')
+  ]));
   box.appendChild(el('button', { class:'primary', onclick: ()=> nextTurn(g) }, 'Következő játékos'));
+  ensureSnippetLoop();
   return box;
 }
 
 function renderGameOver(g){
-  const ranked = [...g.players].sort((a,b)=> b.score - a.score);
+  const endlessGuess = g.mode === 'guess' && isEndless(g);
+  const ranked = [...g.players].sort((a,b)=> endlessGuess
+    ? ((b.hits||0) - (a.hits||0)) || (b.score - a.score)
+    : b.score - a.score);
   const winner = g.winner || ranked[0];
   const backdrop = el('div', {class:'modal-backdrop'});
   const modal = el('div', {class:'modal-card'});
   modal.appendChild(el('div', {class:'trophy'}, '🏆'));
-  modal.appendChild(el('h2', {}, `${winner.name} nyert!`));
-  modal.appendChild(el('p', {}, g.winner
+  modal.appendChild(el('h2', {}, endlessGuess && g.players.length === 1 ? 'Vége a játéknak!' : `${winner.name} nyert!`));
+  modal.appendChild(el('p', {}, endlessGuess ? `${winner.hits||0}/${winner.rounds||0} számot talált el, a leghosszabb sorozata 🔥 ${winner.bestStreak||0}.` : g.winner
     ? `${winner.score} ponttal elérte a ${g.targetScore} pontos célt.`
     : `Elfogyott a lista — a legtöbb ponttal ő áll az élen.`));
   const list = el('div', {class:'card'});
   ranked.forEach((p,i)=> list.appendChild(el('div', {class:'row between'}, [
-    el('span', {}, `${i+1}. ${p.name}`), el('strong', {}, `${p.score} pont`)
+    el('span', {}, `${i+1}. ${p.name}`),
+    el('strong', {}, endlessGuess
+      ? `${p.hits||0}/${p.rounds||0} talált · 🔥 ${p.bestStreak||0} · ${p.score} pont`
+      : `${p.score} pont`)
   ])));
   modal.appendChild(list);
   modal.appendChild(el('button', { class:'primary', onclick: ()=>{ state.game=null; state.tab='sajat'; render(); } }, 'Vissza a listákhoz'));
