@@ -419,11 +419,11 @@ const Spotify = (() => {
   }
   let snippetTimer = null, snippetSeq = 0;
   // A részlet állapota — ebből rajzolja az app az idősávot.
-  const snippet = { status: 'idle', startedAt: 0, durationMs: 0 }; // idle | loading | playing | done
+  const snippet = { status: 'idle', startedAt: 0, durationMs: 0, uri: null, startMs: 0, elapsedMs: 0 }; // idle | loading | playing | paused | done
   function clearSnippetTimer(){ if (snippetTimer){ clearTimeout(snippetTimer); snippetTimer = null; } }
   async function pause(){
     clearSnippetTimer();
-    if (snippet.status === 'loading' || snippet.status === 'playing') snippet.status = 'done';
+    if (snippet.status === 'loading' || snippet.status === 'playing' || snippet.status === 'paused') snippet.status = 'done';
     try { const deviceId = await getActiveDeviceId(); if (deviceId) await api(`/me/player/pause?device_id=${deviceId}`, {method:'PUT'}); }
     catch(e){ /* nincs mit tenni, ha nincs aktív lejátszó */ }
   }
@@ -432,6 +432,7 @@ const Spotify = (() => {
     clearSnippetTimer();
     snippet.status = 'loading';
     snippet.durationMs = durationMs;
+    snippet.uri = uri; snippet.startMs = startMs; snippet.elapsedMs = 0;
     try { await playTrack(uri, startMs); }
     catch(e){ if (mySeq === snippetSeq) snippet.status = 'idle'; throw e; }
     if (mySeq !== snippetSeq) return;
@@ -439,9 +440,30 @@ const Spotify = (() => {
     snippet.status = 'playing';
     snippetTimer = setTimeout(()=>{ snippetTimer = null; snippet.status = 'done'; pause(); }, durationMs);
   }
+  // Megállítás: megjegyzi, meddig jutott a részlet, hogy onnan lehessen folytatni.
+  async function pauseSnippet(){
+    if (snippet.status !== 'playing') return;
+    snippetSeq++;                                   // a függőben lévő hívások ne írják felül az állapotot
+    clearSnippetTimer();
+    snippet.elapsedMs = Math.min(snippet.durationMs, snippet.elapsedMs + (performance.now() - snippet.startedAt));
+    snippet.status = 'paused';
+    try { const deviceId = await getActiveDeviceId(); if (deviceId) await api(`/me/player/pause?device_id=${deviceId}`, {method:'PUT'}); }
+    catch(e){ /* nincs aktív lejátszó */ }
+  }
+  async function resumeSnippet(){
+    if (snippet.status !== 'paused') return;
+    const mySeq = ++snippetSeq;
+    snippet.status = 'loading';
+    try { await playTrack(snippet.uri, snippet.startMs + snippet.elapsedMs); }
+    catch(e){ if (mySeq === snippetSeq) snippet.status = 'paused'; throw e; }
+    if (mySeq !== snippetSeq) return;
+    snippet.startedAt = performance.now();
+    snippet.status = 'playing';
+    snippetTimer = setTimeout(()=>{ snippetTimer = null; snippet.status = 'done'; pause(); }, Math.max(0, snippet.durationMs - snippet.elapsedMs));
+  }
   function snippetInfo(){ return { ...snippet }; }
 
-  return { login, handleRedirect, getTokens, clearTokens, me, search, playTrack, playSnippet, snippetInfo, pause };
+  return { login, handleRedirect, getTokens, clearTokens, me, search, playTrack, playSnippet, pauseSnippet, resumeSnippet, snippetInfo, pause };
 })();
 
 /* ---------------------------------------------------------------------
@@ -1367,7 +1389,9 @@ function updateRevealToggle(){
   const b = document.getElementById('revealToggle');
   if (!b) return;
   const st = Spotify.snippetInfo().status;
-  b.textContent = (st === 'playing' || st === 'loading') ? '⏹ Stop' : '▶ Szám lejátszása (45 mp)';
+  b.textContent = (st === 'playing' || st === 'loading') ? '⏸ Megállítás'
+                : st === 'paused' ? '▶ Folytatás'
+                : '▶ Szám lejátszása (45 mp)';
 }
 
 let snippetLoopRunning = false;
@@ -1384,9 +1408,15 @@ function ensureSnippetLoop(){
       fill.style.width = '100%';
       label.textContent = 'Indul…';
     } else if (s.status === 'playing'){
-      const remaining = Math.max(0, s.durationMs - (performance.now() - s.startedAt));
+      const remaining = Math.max(0, s.durationMs - s.elapsedMs - (performance.now() - s.startedAt));
       fill.style.width = (remaining / s.durationMs * 100) + '%';
       label.textContent = `Hátralévő idő: ${(remaining / 1000).toFixed(1).replace('.', ',')} mp`;
+    } else if (s.status === 'paused'){
+      const remaining = Math.max(0, s.durationMs - s.elapsedMs);
+      fill.style.width = (remaining / s.durationMs * 100) + '%';
+      label.textContent = `Megállítva — hátralévő idő: ${(remaining / 1000).toFixed(1).replace('.', ',')} mp`;
+      snippetLoopRunning = false;
+      return;
     } else {
       fill.style.width = s.status === 'done' ? '0%' : '100%';
       label.textContent = s.status === 'done' ? (label.dataset.done || 'A részlet véget ért — a „Részlet újra” gombbal újrajátszhatod.') : 'A részlet még nem indult el.';
@@ -1604,10 +1634,17 @@ function renderGuessResult(g){
   box.appendChild(el('div', {class:'row'}, [
     el('button', { id:'revealToggle', onclick: ()=>{
       const st = Spotify.snippetInfo().status;
-      if (st === 'playing' || st === 'loading') Spotify.pause();
-      else playRevealClip(g);
+      if (st === 'playing' || st === 'loading'){
+        Spotify.pauseSnippet();
+      } else if (st === 'paused'){
+        Spotify.resumeSnippet().catch(e=> toast('Lejátszási hiba: '+e.message));
+      } else {
+        playRevealClip(g);
+      }
       updateRevealToggle();
-    } }, '▶ Szám lejátszása (45 mp)')
+      ensureSnippetLoop();
+    } }, '▶ Szám lejátszása (45 mp)'),
+    el('button', { class:'ghost', onclick: ()=>{ playRevealClip(g); updateRevealToggle(); } }, '↺ Elölről')
   ]));
   box.appendChild(el('button', { class:'primary', onclick: ()=> nextTurn(g) }, 'Következő játékos'));
   ensureSnippetLoop();
