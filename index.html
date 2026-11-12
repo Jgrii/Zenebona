@@ -410,11 +410,44 @@ const Spotify = (() => {
     const active = devices.find(d => d.is_active) || devices[0];
     return active ? active.id : null;
   }
-  async function playTrack(uri, positionMs=30000){
+  /* iTunes 30 mp-es előnézetek: sima <audio>, nem kell hozzá Spotify */
+  const isPreview = (uri) => /^https?:\/\//.test(uri || '');
+  const previewEl = new Audio();
+  previewEl.preload = 'auto';
+  const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+  let audioUnlocked = false;
+  // iOS/Safari csak felhasználói érintésre engedi az első lejátszást — ezért az első érintésnél "feloldjuk" a lejátszót.
+  function unlockAudio(){
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    previewEl.src = SILENT;
+    previewEl.play().then(()=>{ if (previewEl.src === SILENT) previewEl.pause(); }).catch(()=>{ audioUnlocked = false; });
+  }
+  ['pointerdown','touchend','keydown'].forEach(ev => document.addEventListener(ev, unlockAudio, { passive:true }));
+  function stopPreview(){ try { previewEl.pause(); } catch(e){ /* nincs mit tenni */ } }
+  async function playPreview(url, positionMs){
+    stopPreview();
+    previewEl.src = url;
+    await new Promise((resolve, reject)=>{
+      const done = (fn, arg)=>{ clearTimeout(t); previewEl.removeEventListener('canplay', ok); previewEl.removeEventListener('error', bad); fn(arg); };
+      const ok = ()=> done(resolve);
+      const bad = ()=> done(reject, new Error('Az előnézet nem tölthető be'));
+      const t = setTimeout(bad, 12000);
+      previewEl.addEventListener('canplay', ok);
+      previewEl.addEventListener('error', bad);
+      previewEl.load();
+    });
+    const dur = isFinite(previewEl.duration) ? previewEl.duration : 30;
+    try { previewEl.currentTime = Math.min(Math.max(0, positionMs / 1000), Math.max(0, dur - 0.5)); } catch(e){ /* kezdőpont nélkül is lejátszható */ }
+    await previewEl.play();
+  }
+  async function playTrack(uri, positionMs){
+    if (isPreview(uri)) return playPreview(uri, positionMs ?? 0);
+    stopPreview();
     const deviceId = await getActiveDeviceId();
     if (!deviceId) throw new Error('NO_DEVICE');
     await api(`/me/player/play?device_id=${deviceId}`, {
-      method: 'PUT', body: JSON.stringify({ uris: [uri], position_ms: positionMs })
+      method: 'PUT', body: JSON.stringify({ uris: [uri], position_ms: positionMs ?? 30000 })
     });
   }
   let snippetTimer = null, snippetSeq = 0;
@@ -422,6 +455,7 @@ const Spotify = (() => {
   const snippet = { status: 'idle', startedAt: 0, durationMs: 0, uri: null, startMs: 0, elapsedMs: 0 }; // idle | loading | playing | paused | done
   function clearSnippetTimer(){ if (snippetTimer){ clearTimeout(snippetTimer); snippetTimer = null; } }
   async function pause(){
+    stopPreview();
     clearSnippetTimer();
     if (snippet.status === 'loading' || snippet.status === 'playing' || snippet.status === 'paused') snippet.status = 'done';
     try { const deviceId = await getActiveDeviceId(); if (deviceId) await api(`/me/player/pause?device_id=${deviceId}`, {method:'PUT'}); }
@@ -443,6 +477,7 @@ const Spotify = (() => {
   // Megállítás: megjegyzi, meddig jutott a részlet, hogy onnan lehessen folytatni.
   async function pauseSnippet(){
     if (snippet.status !== 'playing') return;
+    stopPreview();
     snippetSeq++;                                   // a függőben lévő hívások ne írják felül az állapotot
     clearSnippetTimer();
     snippet.elapsedMs = Math.min(snippet.durationMs, snippet.elapsedMs + (performance.now() - snippet.startedAt));
@@ -463,14 +498,89 @@ const Spotify = (() => {
   }
   function snippetInfo(){ return { ...snippet }; }
 
-  return { login, handleRedirect, getTokens, clearTokens, me, search, playTrack, playSnippet, pauseSnippet, resumeSnippet, snippetInfo, pause };
+  return { login, handleRedirect, getTokens, clearTokens, me, search, playTrack, playSnippet, pauseSnippet, resumeSnippet, snippetInfo, pause, stopPreview, isPreview };
 })();
+
+/* ---------------------------------------------------------------------
+   iTUNES SEARCH — bejelentkezés nélküli forrás (30 mp-es előnézetek)
+   A böngészőből a sima fetch-et blokkolja a CORS, ezért JSONP-vel kérjük le.
+   --------------------------------------------------------------------- */
+const ITunes = (() => {
+  const GAP_MS = 2600;                 // az Apple kb. percenként 20 kérést enged
+  let chain = Promise.resolve(), lastAt = 0;
+  const cache = new Map();
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  function jsonp(url){
+    return new Promise((resolve, reject)=>{
+      const cb = 'itcb' + Math.random().toString(36).slice(2);
+      const sc = document.createElement('script');
+      const timer = setTimeout(()=>{ cleanup(); reject(new Error('időtúllépés')); }, 12000);
+      function cleanup(){ clearTimeout(timer); delete window[cb]; sc.remove(); }
+      window[cb] = (data)=>{ cleanup(); resolve(data); };
+      sc.onerror = ()=>{ cleanup(); reject(new Error('a betöltés sikertelen')); };
+      sc.src = url + '&callback=' + cb;
+      document.head.appendChild(sc);
+    });
+  }
+  function throttled(fn){
+    const run = chain.then(async ()=>{
+      const wait = Math.max(0, lastAt + GAP_MS - Date.now());
+      if (wait) await sleep(wait);
+      try { return await fn(); } finally { lastAt = Date.now(); }
+    });
+    chain = run.catch(()=>{});
+    return run;
+  }
+  function normalizeTrack(r){
+    const year = parseInt((r.releaseDate || '').slice(0,4), 10);
+    return {
+      id: 'it' + r.trackId, uri: r.previewUrl, src: 'itunes',
+      name: r.trackName, artist: r.artistName, album: r.collectionName || null,
+      year: Number.isFinite(year) ? year : null,
+      image: r.artworkUrl100 || r.artworkUrl60 || null,
+      duration_ms: 30000            // csak az előnézet játszható le
+    };
+  }
+  async function search(query){
+    const key = query.trim().toLowerCase();
+    if (cache.has(key)) return cache.get(key);
+    const url = 'https://itunes.apple.com/search?' + new URLSearchParams({
+      term: query.trim(), country: 'HU', media: 'music', entity: 'song', limit: '25' });
+    let data;
+    try { data = await throttled(()=> jsonp(url)); }
+    catch(e){ data = await throttled(()=> jsonp(url)); }   // egyszer újrapróbáljuk
+    const out = (data.results || []).filter(r => r.previewUrl && r.trackName).map(normalizeTrack);
+    cache.set(key, out);
+    return out;
+  }
+  return { search };
+})();
+
+const GUEST_USER = { id: 'guest', display_name: 'Vendég', guest: true };
+const GUEST_FLAG = 'zenebona_guest';
+const LOCAL_KEY = 'zenebona_local_playlists';
+const Local = {
+  all(){ try { return JSON.parse(localStorage.getItem(LOCAL_KEY)) || []; } catch { return []; } },
+  write(list){ try { localStorage.setItem(LOCAL_KEY, JSON.stringify(list)); } catch(e){ toast('Nem sikerült a helyi mentés.'); } }
+};
+const isPreviewTrack = (t) => /^https?:\/\//.test((t && t.uri) || '');
+const guestPlayable = (pl) => pl.tracks.length > 0 && pl.tracks.every(isPreviewTrack);
 
 /* ---------------------------------------------------------------------
    FIRESTORE — playlistek (publikus/privát)
    --------------------------------------------------------------------- */
 const Store = {
   async savePlaylist(playlist){
+    if (playlist.ownerId === GUEST_USER.id){          // vendég: csak ezen az eszközön tároljuk
+      const list = Local.all();
+      if (!playlist.id) playlist.id = 'local-' + uid();
+      playlist.updatedAt = Date.now();
+      const i = list.findIndex(x => x.id === playlist.id);
+      if (i >= 0) list[i] = playlist; else list.push(playlist);
+      Local.write(list);
+      return playlist;
+    }
     if (!db) throw new Error('NO_DB');
     const ref = playlist.id ? db.collection('playlists').doc(playlist.id) : db.collection('playlists').doc();
     playlist.id = ref.id;
@@ -479,10 +589,12 @@ const Store = {
     return playlist;
   },
   async deletePlaylist(id){
+    if (String(id).startsWith('local-')){ Local.write(Local.all().filter(x => x.id !== id)); return; }
     if (!db) return;
     await db.collection('playlists').doc(id).delete();
   },
   async myPlaylists(ownerId){
+    if (ownerId === GUEST_USER.id) return Local.all();
     if (!db) return [];
     const snap = await db.collection('playlists').where('ownerId','==', ownerId).get();
     return snap.docs.map(d => d.data());
@@ -502,6 +614,7 @@ const state = {
   user: null,             // spotify /me
   editing: null,          // playlist szerkesztés alatt
   searchResults: [],
+  searchSource: 'spotify', // spotify | itunes
   myPlaylists: [],
   publicPlaylists: [],
   game: null              // aktív játék állapota
@@ -520,7 +633,7 @@ function renderTabs(){
   TABS.forEach(t=>{
     nav.appendChild(el('button', {
       class: state.tab === t.id ? 'active' : '',
-      onclick: () => { state.tab = t.id; render(); }
+      onclick: () => { Spotify.stopPreview(); state.tab = t.id; render(); }
     }, t.label));
   });
 }
@@ -532,7 +645,14 @@ function renderAuthArea(){
     area.appendChild(el('span', {class:'pill'}, 'nincs beállítva'));
     return;
   }
-  if (state.user){
+  if (state.user && state.user.guest){
+    area.appendChild(el('span', {class:'muted'}, 'Vendég'));
+    area.appendChild(el('button', { class:'primary', onclick: ()=> Spotify.login() }, 'Spotify bejelentkezés'));
+    area.appendChild(el('button', { class:'ghost', onclick: ()=>{
+      try { localStorage.removeItem(GUEST_FLAG); } catch(e){ /* nem gond */ }
+      state.user = null; state.game = null; state.editing = null; state.tab = 'sajat'; render();
+    } }, 'Kilépés'));
+  } else if (state.user){
     area.appendChild(el('span', {class:'muted'}, state.user.display_name || state.user.id));
     area.appendChild(el('button', { class:'ghost', onclick: ()=>{ Spotify.clearTokens(); state.user = null; render(); } }, 'Kilépés'));
   } else {
@@ -555,10 +675,7 @@ async function render(){
   if (!CONFIGURED){
     app.appendChild(renderSetupWarning());
   } else if (!state.user){
-    app.appendChild(el('div', {class:'empty'}, [
-      el('div', {class:'big'}, 'Jelentkezz be Spotify fiókoddal'),
-      el('p', {}, 'A bejelentkezés kell a kereséshez, a saját listáidhoz és a lejátszás vezérléséhez a játék közben.')
-    ]));
+    app.appendChild(renderLanding());
   } else {
     if (state.tab === 'sajat') app.appendChild(await renderMyPlaylists());
     if (state.tab === 'publikus') app.appendChild(await renderPublicPlaylists());
@@ -575,6 +692,25 @@ async function render(){
       }
     }
   }
+}
+
+function renderLanding(){
+  const wrap = el('div', {});
+  wrap.appendChild(el('h2', {}, 'Hogyan szeretnél játszani?'));
+  wrap.appendChild(el('div', {class:'card'}, [
+    el('h3', {}, '🎧 Bejelentkezés nélkül'),
+    el('p', {}, 'Fiók és Premium nélkül működik, bárkinek. A számokból 30 másodperces előnézet szól közvetlenül a telefonodon. A saját listáid ezen az eszközön maradnak meg, a publikus listák közül a bejelentkezés nélkül is játszhatóak elérhetők.'),
+    el('button', { class:'primary', onclick: ()=>{
+      try { localStorage.setItem(GUEST_FLAG, '1'); } catch(e){ /* nem gond */ }
+      state.user = GUEST_USER; state.tab = 'sajat'; render();
+    } }, 'Folytatás vendégként')
+  ]));
+  wrap.appendChild(el('div', {class:'card'}, [
+    el('h3', {}, '🟢 Spotify fiókkal'),
+    el('p', {}, 'Teljes számok a saját Spotify lejátszódon (Premium kell), listák mentése felhőbe, publikus megosztás. Egyelőre csak a fejlesztő által engedélyezett fiókok léphetnek be.'),
+    el('button', { onclick: ()=> Spotify.login() }, 'Spotify bejelentkezés')
+  ]));
+  return wrap;
 }
 
 function renderSetupWarning(){
@@ -622,11 +758,15 @@ function playlistCard(pl, mine){
   const card = el('div', {class:'card'});
   card.appendChild(el('div', {class:'between'}, [
     el('h3', {}, pl.name),
-    el('span', {class:'pill' + (pl.public ? ' on':'')}, pl.public ? 'publikus' : 'privát')
+    el('span', {class:'pill' + (pl.public ? ' on':'')}, String(pl.id||'').startsWith('local-') ? 'csak ezen az eszközön' : (pl.public ? 'publikus' : 'privát'))
   ]));
-  card.appendChild(el('p', {}, `${pl.tracks.length} szám • ${pl.ownerName || 'ismeretlen szerkesztő'}`));
+  card.appendChild(el('p', {}, `${pl.tracks.length} szám • ${pl.ownerName || 'ismeretlen szerkesztő'}` + (guestPlayable(pl) ? ' • 🎧 bejelentkezés nélkül is játszható' : '')));
   const row = el('div', {class:'row'});
-  row.appendChild(el('button', { class:'primary', onclick: ()=> startGameSetup(pl) }, 'Játék indítása'));
+  if (state.user.guest && !guestPlayable(pl)){
+    row.appendChild(el('button', { disabled:true, title:'Ez a lista Spotify-számokat tartalmaz' }, 'Spotify bejelentkezés kell hozzá'));
+  } else {
+    row.appendChild(el('button', { class:'primary', onclick: ()=> startGameSetup(pl) }, 'Játék indítása'));
+  }
   if (mine){
     row.appendChild(el('button', { onclick: ()=> { state.editing = pl; state.tab='szerkeszto'; render(); } }, 'Szerkesztés'));
     row.appendChild(el('button', { class:'ghost', onclick: async ()=>{
@@ -652,21 +792,37 @@ function renderEditor(){
   nameInput.style.marginBottom = '.6em';
   wrap.appendChild(nameInput);
 
-  const toggleRow = el('div', {class:'row'});
-  const toggleBtn = el('button', {
-    onclick: ()=>{ pl.public = !pl.public; render(); }
-  }, pl.public ? '🌍 Publikus — bárki láthatja' : '🔒 Privát — csak te látod');
-  toggleRow.appendChild(toggleBtn);
-  wrap.appendChild(toggleRow);
+  const guest = !!state.user.guest;
+  if (!guest){
+    const toggleRow = el('div', {class:'row'});
+    const toggleBtn = el('button', {
+      onclick: ()=>{ pl.public = !pl.public; render(); }
+    }, pl.public ? '🌍 Publikus — bárki láthatja' : '🔒 Privát — csak te látod');
+    toggleRow.appendChild(toggleBtn);
+    wrap.appendChild(toggleRow);
+  } else {
+    wrap.appendChild(el('p', {class:'muted'}, 'Vendégként a lista csak ezen az eszközön marad meg.'));
+  }
 
   wrap.appendChild(el('h3', {}, 'Számok keresése'));
+  const source = guest ? 'itunes' : state.searchSource;
+  if (!guest){
+    wrap.appendChild(el('div', {class:'row'}, [
+      el('button', { class: source === 'spotify' ? 'primary' : '', onclick: ()=>{ state.searchSource = 'spotify'; state.searchResults = []; render(); } }, '🟢 Spotify'),
+      el('button', { class: source === 'itunes' ? 'primary' : '', onclick: ()=>{ state.searchSource = 'itunes'; state.searchResults = []; render(); } }, '🎧 iTunes (fiók nélkül is játszható)')
+    ]));
+  }
+  if (source === 'itunes'){
+    wrap.appendChild(el('p', {class:'muted'}, 'Az iTunes sokszor válogatásalbum vagy újrakiadás évét adja meg — a lista alatt az évszámot átírhatod. A ▶ gombbal meghallgathatod a számot.'));
+  }
   const searchRow = el('div', {class:'row'});
   const searchInput = el('input', { type:'search', placeholder:'Előadó vagy cím...' });
   searchInput.style.flex = '1';
   const doSearch = async ()=>{
     if (!searchInput.value.trim()) return;
-    try { state.searchResults = await Spotify.search(searchInput.value.trim()); }
-    catch(e){ toast('Keresési hiba: '+e.message); state.searchResults = []; }
+    if (source === 'itunes') toast('Keresés az iTunesban…', 2500);
+    try { state.searchResults = source === 'itunes' ? await ITunes.search(searchInput.value.trim()) : await Spotify.search(searchInput.value.trim()); }
+    catch(e){ toast('Keresési hiba: '+e.message+(source === 'itunes' ? ' — az Apple korlátozza a gyors keresést, próbáld újra pár mp múlva.' : '')); state.searchResults = []; }
     render();
   };
   searchInput.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') doSearch(); });
@@ -679,6 +835,16 @@ function renderEditor(){
     state.searchResults.forEach(tr=>{
       const row = trackRow(tr, true);
       const already = pl.tracks.some(x=>x.id===tr.id);
+      if (isPreviewTrack(tr)){
+        let on = false;
+        const listen = el('button', { class:'ghost', title:'Meghallgatás' }, '▶');
+        listen.addEventListener('click', async ()=>{
+          if (on){ Spotify.stopPreview(); on = false; listen.textContent = '▶'; return; }
+          try { await Spotify.playTrack(tr.uri, 0); on = true; listen.textContent = '⏸'; }
+          catch(e){ toast('Lejátszási hiba: '+e.message); }
+        });
+        row.appendChild(listen);
+      }
       row.appendChild(el('button', { disabled: already,
         onclick: ()=>{ pl.tracks.push(tr); render(); } }, already ? '✓ hozzáadva' : 'Hozzáadás'));
       resultsCard.appendChild(row);
@@ -687,7 +853,7 @@ function renderEditor(){
   }
 
   wrap.appendChild(el('h3', {}, `Lista számai (${pl.tracks.length})`));
-  if (pl.tracks.length) wrap.appendChild(el('p', {class:'muted'}, 'Az évszám mezőbe kattintva módosíthatod, ha a Spotify rossz kiadási dátumot ad meg (pl. válogatásalbumnál).'));
+  if (pl.tracks.length) wrap.appendChild(el('p', {class:'muted'}, 'Az évszám mezőbe kattintva módosíthatod, ha a forrás rossz kiadási dátumot ad meg (pl. válogatásalbumnál).'));
   if (!pl.tracks.length){
     wrap.appendChild(el('p', {}, 'Még nincs hozzáadott szám.'));
   } else {
@@ -706,10 +872,10 @@ function renderEditor(){
   saveRow.appendChild(el('button', { class:'primary', onclick: async ()=>{
     if (!pl.name.trim()) { toast('Adj nevet a listának.'); return; }
     if (pl.tracks.length < 4) { toast('Legalább 4 szám kell a játékhoz.'); return; }
-    try { await Store.savePlaylist(pl); toast('Mentve.'); state.editing = null; state.tab='sajat'; render(); }
+    try { Spotify.stopPreview(); await Store.savePlaylist(pl); toast('Mentve.'); state.editing = null; state.tab='sajat'; render(); }
     catch(e){ toast('Mentési hiba: '+e.message); }
   } }, 'Lista mentése'));
-  saveRow.appendChild(el('button', { class:'ghost', onclick: ()=>{ state.editing=null; state.tab='sajat'; render(); } }, 'Mégse'));
+  saveRow.appendChild(el('button', { class:'ghost', onclick: ()=>{ Spotify.stopPreview(); state.editing=null; state.tab='sajat'; render(); } }, 'Mégse'));
   wrap.appendChild(saveRow);
 
   return wrap;
@@ -722,12 +888,12 @@ function trackRow(tr, showYear, editableYear=false){
   row.appendChild(art);
   row.appendChild(el('div', {class:'meta'}, [
     el('div', {class:'t'}, tr.name),
-    el('div', {class:'a'}, tr.artist)
+    el('div', {class:'a'}, tr.artist + (tr.album ? ' · ' + tr.album : ''))
   ]));
   if (editableYear){
     row.appendChild(el('input', {
       type: 'number', class: 'year-input', value: tr.year != null ? String(tr.year) : '',
-      title: 'Kiadási év — módosítsd, ha a Spotify rossz dátumot ad meg',
+      title: 'Kiadási év — módosítsd, ha a forrás rossz dátumot ad meg',
       min: '1900', max: String(new Date().getFullYear()),
       onchange: (e)=>{
         const v = parseInt(e.target.value, 10);
@@ -857,7 +1023,7 @@ function renderGameSetup(g){
       try {
         const [mine, pub] = await Promise.all([Store.myPlaylists(state.user.id), Store.publicPlaylists()]);
         const seen = new Set([g.playlist.id]);
-        g.extraPlaylistOptions = [...mine, ...pub].filter(pl => !seen.has(pl.id) && (seen.add(pl.id), true));
+        g.extraPlaylistOptions = [...mine, ...pub].filter(pl => !seen.has(pl.id) && (seen.add(pl.id), true) && (!state.user.guest || guestPlayable(pl)));
       } catch(e){ toast('Nem sikerült betölteni a listákat: '+e.message); g.extraPlaylistOptions = []; }
     }
     render();
@@ -1391,7 +1557,12 @@ function updateRevealToggle(){
   const st = Spotify.snippetInfo().status;
   b.textContent = (st === 'playing' || st === 'loading') ? '⏸ Megállítás'
                 : st === 'paused' ? '▶ Folytatás'
-                : '▶ Szám lejátszása (45 mp)';
+                : `▶ Szám lejátszása (${revealSecs()} mp)`;
+}
+// iTunes-előnézetnél csak 30 mp van, Spotify-nál 45
+function revealSecs(){
+  const t = state.game && state.game.current && state.game.current.track;
+  return t && Spotify.isPreview(t.uri) ? 30 : CLIP_REVEAL_MS / 1000;
 }
 
 let snippetLoopRunning = false;
@@ -1643,7 +1814,7 @@ function renderGuessResult(g){
       }
       updateRevealToggle();
       ensureSnippetLoop();
-    } }, '▶ Szám lejátszása (45 mp)'),
+    } }, `▶ Szám lejátszása (${revealSecs()} mp)`),
     el('button', { class:'ghost', onclick: ()=>{ playRevealClip(g); updateRevealToggle(); } }, '↺ Elölről')
   ]));
   box.appendChild(el('button', { class:'primary', onclick: ()=> nextTurn(g) }, 'Következő játékos'));
@@ -1688,6 +1859,8 @@ function renderGameOver(g){
     try { state.user = await Spotify.me(); }
     catch(e){ Spotify.clearTokens(); }
   }
+  if (state.user){ try { localStorage.removeItem(GUEST_FLAG); } catch(e){ /* nem gond */ } }
+  else { try { if (localStorage.getItem(GUEST_FLAG)) state.user = GUEST_USER; } catch(e){ /* nem gond */ } }
   render();
 })();
 </script>
